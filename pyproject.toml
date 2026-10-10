@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stackxai"
+version = "1.4.2"
+description = "Explainable out-of-fold stacking with nested temporal validation for travel- and delivery-time prediction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "numpy>=1.24", "pandas>=2.0", "scipy>=1.10", "scikit-learn>=1.4",
+  "lightgbm>=4.0", "xgboost>=2.0", "catboost>=1.2", "optuna>=3.4",
+  "shap>=0.44", "matplotlib>=3.7", "pyarrow>=12", "pyyaml>=6.0", "psutil>=5.9", "joblib>=1.3",
+]
+
+[project.optional-dependencies]
+deep = ["torch>=2.1", "pytorch-tabnet>=4.1", "rtdl_revisiting_models>=0.0.2"]
+gam = ["interpret-core>=0.5"]
+all = ["stackxai[deep,gam]"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+stackxai = "stackxai.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

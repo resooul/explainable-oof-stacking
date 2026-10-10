@@ -1,0 +1,49 @@
+# Minutes-scale end-to-end check on a subsample; not intended for reporting.
+run:
+  name: nyc_smoke
+  n_jobs: 2
+
+dataset:
+  adapter: nyc_taxi
+  path: data/raw/nyc/train.csv
+  sample_rows: 30000
+
+split:
+  n_folds: 3
+
+tuning:
+  max_rows: 8000
+  early_stopping_rounds: 20
+  max_estimators: 400
+  n_trials: {LGBM: 3, XGB: 3, CAT: 2, RF: 2, DT: 2, RIDGE: 2}
+
+base_learners: [LGBM, XGB, CAT, RF, DT, OLS, RIDGE]
+
+stacking:
+  meta_trials: 3
+
+statistics:
+  bootstrap_resamples: 200
+
+robustness:
+  seeds: [0, 1]
+
+rolling:
+  n_origins: 2
+
+explain:
+  tree_shap_rows: 500
+  pipeline_shap_rows: 20
+  pipeline_permutations: 1
+  background_rows: 20
+
+sensitivity:
+  enabled: true
+  params: [learning_rate]
+
+profiling:
+  latency_rows: 100
+  warmup: 10
+  workers: [1, 2]
+  process_workers: [1, 2]
+  batch_rows: 5000

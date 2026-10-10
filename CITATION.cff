@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the accompanying article."
+title: "Explainable Out-of-Fold Stacking with Nested Temporal Validation"
+version: 1.3.1
+license: MIT
+authors:
+  - family-names: Özdemir
+    given-names: Resul
+    email: dr.resul.ozdemir@gmail.com
+  - family-names: Taşyürek
+    given-names: Murat
+    affiliation: "Department of Computer Engineering, Kayseri University"
+  - family-names: Aslantaş
+    given-names: Veysel
+    affiliation: "Department of Computer Engineering, Erciyes University"
+preferred-citation:
+  type: article
+  title: "Leveraging an Explainable Stacking Ensemble Model for Near-Real-Time Decision Support in Same-Day Delivery Shipments"
+  authors:
+    - family-names: Özdemir
+      given-names: Resul
+    - family-names: Taşyürek
+      given-names: Murat
+    - family-names: Aslantaş
+      given-names: Veysel
+  status: submitted
