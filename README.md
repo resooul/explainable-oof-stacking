@@ -8,7 +8,7 @@ Reference implementation of the stacking methodology described in
 The repository reproduces every analysis of the article on the public
 [NYC Taxi Trip Duration](https://www.kaggle.com/competitions/nyc-taxi-trip-duration) dataset. The proprietary
 delivery dataset used in the article cannot be redistributed; the identical pipeline is applied to it through the
-generic dataset adapter (`configs/generic_example.yaml`).
+generic dataset adapter; its configuration is published in `configs/ssd.yaml` (see also `configs/generic_example.yaml`).
 
 ## Methodology
 
@@ -129,7 +129,7 @@ training protocol. Search spaces are printed by `python -m stackxai spaces` and 
 Python ≥ 3.10.
 
 ```bash
-git clone https://github.com/<user>/explainable-oof-stacking.git
+git clone https://github.com/resooul/explainable-oof-stacking.git
 cd explainable-oof-stacking
 pip install -e ".[all,dev]"      # core, deep learners, EBM and tests
 # pip install -e .               # core only: tree-based and linear learners
@@ -164,7 +164,7 @@ python -m stackxai plots --run-dir results/nyc             # redraw figures from
 
 The NYC results of the article were produced with version 1.3. `configs/nyc.yaml` therefore sets
 `tuning.val_position: after_cut`, `tuning.sampler_seed: shared` and `stacking.combiner_selection: blocked`, which
-reproduce them exactly; removing these three lines runs the NYC experiment under the 1.4 protocol.
+reproduce them exactly; removing these three lines runs the NYC experiment under the 1.4 protocol. The SSD results were produced with version 1.4.2 and `configs/ssd.yaml`.
 
 ### Running in stages
 

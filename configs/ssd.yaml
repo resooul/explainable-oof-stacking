@@ -1,0 +1,155 @@
+# SSD experiment of the article. The data are proprietary and are not part of this repository;
+# the configuration is published so that the protocol of the delivery experiment can be inspected.
+# Input: the modelling table, one row per order and phase (not public).
+# Every setting is stated explicitly. Apart from the dataset section, the protocol is that of configs/nyc.yaml with
+# the three changes of version 1.4: the inner validation rows are the most recent rows of each training segment,
+# every hyperparameter search has its own sampler seed, and the combiner is chosen on the forward-chaining
+# out-of-fold predictions.
+run:
+  name: ssd
+  output_dir: results
+  seed: 0
+  n_jobs: -1
+  continue_on_error: false
+
+dataset:
+  adapter: generic
+  path: data/processed/ssd_model_table.parquet
+  time_col: shipmentCreatedDate  # prediction time; rows are ordered and split by it
+  target_col: timeDifference     # minutes from shipment creation to the phase event
+  target_scale: 0.016666666666666666   # minutes -> hours
+  target_unit: hours
+  target_transform: log          # models are trained, tuned and selected on log(minutes); metrics are reported in hours
+  target_smearing: stratum       # retransformation bias corrected per phase (Duan's smearing, training rows only)
+  group_col: orderKey            # the pickup and delivery rows of an order stay on the same side of every split
+  strata_col: shipmentStatus     # metrics and tests are also reported per phase
+  cluster: day                   # bootstrap resamples whole creation days (both rows of an order share one day)
+  features: null                 # every column except time, target, group and 'exclude'
+  exclude: [index]
+  categorical: [deliveryCompanyId, senderCity, senderCountry, paymentType, boxSize, partOfDay, shipmentStatus]
+  calendar:
+    enabled: false               # calendar features are already in the table (derived from shipmentCreatedDate)
+  geo: null                      # distance_km is already in the table
+
+split:
+  test_fraction: 0.3             # chronological, by order
+  n_folds: 5
+  gap: null
+
+tuning:
+  mode: nested
+  metric: rmse
+  val_fraction: 0.2
+  max_rows: 150000
+  max_val_rows: 90000            # about 2.5 months at roughly 36,000 rows per month
+  inner_split: contiguous
+  val_position: latest           # validation rows are the most recent rows of the segment
+  sampler_seed: per_split        # every search draws its own start-up configurations
+  space_overrides:
+    RIDGE: {alpha: [float_log, 0.001, 1.0e+7]}   # with ~870,000 training rows a penalty below ~1e3 has no effect
+  early_stopping_rounds: 100
+  max_estimators: 10000
+  refit_scaling: sqrt
+  warm_start: true
+  n_trials: {LGBM: 20, XGB: 20, CAT: 20, RF: 20, DT: 20, RIDGE: 20, EBM: 20,
+             MLP: 20, RESNET: 20, CNN: 20, LSTM: 20, FTT: 20, TABNET: 20}
+  deep: {device: auto, batch_size: 1024, eval_batch_size: 8192, max_epochs: 100, patience: 8}
+
+base_learners: [LGBM, XGB, CAT, RF, DT, OLS, RIDGE, EBM, MLP, RESNET, CNN, LSTM, FTT, TABNET]
+
+stacking:
+  top_k: 3
+  selection_metric: rmse
+  oof_schemes: [blocked, forward]
+  primary_scheme: blocked
+  secondary_learners: selected
+  meta_learners: [EN_AVG, EN_WAVG, EN_LIN, EN_LGBM, EN_XGB, EN_CAT]
+  wavg_objective: mse
+  meta_trials: 15
+  meta_val_fraction: 0.2
+  meta_selection: rolling
+  meta_selection_windows: 4
+  combiner_selection: forward
+
+evaluation:
+  primary_metric: rmse
+  clip_min: 0.0
+  band_quantiles: [0.25, 0.75]
+  band_labels: [short, medium, long]
+  period: M
+  rare_threshold: 10
+
+statistics:
+  alpha: 0.05
+  bootstrap_resamples: 2000
+  extra_references: [FTT]
+
+robustness:
+  seeds: [0, 1, 2, 3, 4]
+
+rolling:
+  enabled: true
+  n_origins: 4
+  test_fraction: 0.1
+  window: expanding
+  tuning_mode: single
+  base_learners: [LGBM, XGB, CAT, FTT]   # added to the selected families; top-k selection is repeated at each origin
+  trial_scale: 0.5
+  reference: main
+
+sensitivity:
+  enabled: true
+  learners: selected
+  params: null
+  log_factors: [0.5, 2.0]
+  linear_step: 0.25
+
+explain:
+  enabled: true
+  tree_models: selected
+  tree_shap_rows: 5000
+  pipeline_shap_rows: 300
+  pipeline_permutations: 3
+  background_rows: 100
+  top_k_overlap: 10
+  dependence_top: 3
+  waterfall_quantile: 0.95
+  feature_labels:                # display names in figures (tables keep the column names); redraw with
+    deliveryCompanyId: Delivery Company     #   python -m stackxai plots --run-dir results/ssd --config <file>
+    senderCity: Sender City
+    senderCountry: Sender Country
+    shipmentStatus: Target Status
+    distance_km: Distance
+    grandTotal: Grand Total
+    itemCount: Item Count
+    packageCount: Package Count
+    paymentType: Payment Type
+    boxSize: Box Size
+    productType: Product Type
+    partOfDay: Part of Day
+    recipientAddressConfirmed: Address Confirmed
+    hour: Order Hour
+    dayofweek: Day of Week
+    dayofmonth: Day of Month
+    dayofyear: Day of Year
+    weekofyear: Week of Year
+    month: Month
+    quarter: Quarter
+    year: Year
+    isWeekend: Is Weekend
+    isHoliday: Is Holiday
+    isRamadan: Is Ramadan
+  value_labels:                  # displayed values of categorical features (waterfall and dependence plots)
+    shipmentStatus: {pickedUp: Pickup, delivered: Delivery}
+    paymentType: {paid: Paid, cod: COD}
+    boxSize: {small: Small, medium: Medium, big: Big, extra: Extra Large}
+    partOfDay: {morning: Morning, afternoon: Afternoon, evening: Evening, night: Night}
+    # productType holds the former isGift flag (0/1); add e.g. {0: Parcel, 1: Document} once the coding is confirmed
+
+profiling:
+  enabled: true
+  latency_rows: 1000
+  warmup: 50
+  workers: [1, 2, 4, 8]
+  process_workers: [1, 2, 4, 8]
+  batch_rows: 100000
