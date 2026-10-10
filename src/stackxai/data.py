@@ -14,11 +14,14 @@ from .target import TargetScale
 
 log = logging.getLogger(__name__)
 
+# Dataset adapters by name (dataset.adapter); each takes the configuration and returns a Dataset.
 ADAPTERS: dict[str, Callable[[dict], "Dataset"]] = {}
 
 
 def register(name: str):
+    """Decorator that registers a dataset adapter under ``name``, the value selected by ``dataset.adapter``."""
     def wrap(fn):
+        """Store ``fn`` in ``ADAPTERS`` and return it unchanged."""
         ADAPTERS[name] = fn
         return fn
     return wrap
@@ -26,6 +29,14 @@ def register(name: str):
 
 @dataclass
 class Dataset:
+    """Modelling table in temporal order, together with the roles of its columns.
+
+    ``target`` names the target column on the report scale (``target_unit``); ``transform`` maps it to the model
+    scale on which the learners are trained. ``group_col`` keeps correlated rows, such as the pickup and delivery
+    rows of one order, on the same side of every split; ``strata_col`` defines subsets that are also reported
+    separately; ``cluster_col`` defines the clusters resampled by the bootstrap. ``flow`` records how many rows each
+    cleaning step removed.
+    """
     frame: pd.DataFrame
     features: list[str]
     categorical: list[str]
@@ -40,6 +51,7 @@ class Dataset:
 
     @property
     def X(self) -> pd.DataFrame:
+        """Feature columns."""
         return self.frame[self.features]
 
     @property
@@ -53,10 +65,12 @@ class Dataset:
         return self.frame[self.target].to_numpy(dtype=float)
 
     def strata_values(self) -> np.ndarray | None:
+        """Stratum of every row, or ``None`` when no stratum column is set."""
         return None if self.strata_col is None else self.frame[self.strata_col].to_numpy(dtype=object)
 
     @property
     def times(self) -> np.ndarray:
+        """Timestamp of every row, i.e. the moment at which the prediction is made."""
         return self.frame[self.time_col].to_numpy()
 
     def fingerprint(self) -> list:
@@ -77,6 +91,7 @@ class Dataset:
 
 
 class FlowLog:
+    """Records, for every cleaning step, the number of remaining rows and the number of rows the step removed."""
     def __init__(self):
         self.rows: list[dict] = []
 
@@ -98,6 +113,7 @@ def temporal_order(frame: pd.DataFrame, time_col: str, group_col: str | None) ->
 
 
 def _read_table(path: str | Path, nrows: int | None = None, usecols=None) -> pd.DataFrame:
+    """Read a CSV or Parquet file, optionally limited to its first ``nrows`` rows and to the columns ``usecols``."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Dataset file not found: {path}")
@@ -108,6 +124,10 @@ def _read_table(path: str | Path, nrows: int | None = None, usecols=None) -> pd.
 
 
 def _add_cluster(frame: pd.DataFrame, cfg: dict, time_col: str) -> str | None:
+    """Name of the column that defines bootstrap clusters, or ``None``. ``dataset.cluster: day`` derives a
+    calendar-day column from ``time_col``, ``none`` disables clustering, and any other value names an existing
+    column.
+    """
     cluster = cfg.get("cluster", "day")
     if cluster in (None, "none"):
         return None
@@ -129,6 +149,10 @@ def holiday_dates(spec, ts: pd.Series) -> pd.DatetimeIndex | None:
 
 
 def calendar_features(ts: pd.Series, prefix: str = "", holidays: pd.DatetimeIndex | None = None) -> pd.DataFrame:
+    """Calendar features of the timestamps ``ts``: hour, minute of day, weekday, day of month, day of year, ISO
+    week, month and a weekend flag, plus a holiday flag when ``holidays`` is given. Column names start with
+    ``prefix``.
+    """
     out = pd.DataFrame({
         f"{prefix}hour": ts.dt.hour,
         f"{prefix}minute_of_day": ts.dt.hour * 60 + ts.dt.minute,
@@ -145,12 +169,14 @@ def calendar_features(ts: pd.Series, prefix: str = "", holidays: pd.DatetimeInde
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance in kilometres between two coordinate pairs given in degrees."""
     lat1, lon1, lat2, lon2 = map(np.radians, (lat1, lon1, lat2, lon2))
     a = np.sin((lat2 - lat1) / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
     return 6371.0088 * 2 * np.arcsin(np.sqrt(a))
 
 
 def bearing_deg(lat1, lon1, lat2, lon2):
+    """Initial bearing in degrees (0 to 360, clockwise from north) from the first to the second coordinate pair."""
     lat1, lon1, lat2, lon2 = map(np.radians, (lat1, lon1, lat2, lon2))
     x = np.sin(lon2 - lon1) * np.cos(lat2)
     y = np.cos(lat1) * np.sin(lat2) - np.sin(lat1) * np.cos(lat2) * np.cos(lon2 - lon1)
@@ -183,7 +209,11 @@ def geo_features(df: pd.DataFrame, geo: dict) -> pd.DataFrame:
 
 @register("nyc_taxi")
 def load_nyc_taxi(cfg: dict) -> Dataset:
-    """Kaggle 'New York City Taxi Trip Duration' (train.csv)."""
+    """Adapter for the training file (train.csv) of the Kaggle 'New York City Taxi Trip Duration' competition.
+
+    The cleaning rules of ``dataset.cleaning`` are applied and logged step by step; distance, bearing and calendar
+    features are derived from the pickup record, and the trip duration in minutes is the target.
+    """
     c = cfg["dataset"]
     rules = {"min_duration_s": 60, "max_duration_s": 18_000,
              "lat_range": [40.49, 40.92], "lon_range": [-74.27, -73.68],
@@ -267,7 +297,11 @@ def _attach_target(X: pd.DataFrame, Y: pd.DataFrame, c: dict) -> pd.DataFrame:
 
 @register("generic")
 def load_generic(cfg: dict) -> Dataset:
-    """Any pre-engineered table with a timestamp, a target and feature columns."""
+    """Adapter for any pre-engineered table with a timestamp, a target and feature columns.
+
+    Every column other than the time, target, group, join-key and excluded columns becomes a feature unless
+    ``dataset.features`` lists them explicitly. Optional geo and calendar features are derived before that choice.
+    """
     c = cfg["dataset"]
     for key in ("path", "time_col", "target_col"):
         if not c.get(key):
@@ -284,6 +318,7 @@ def load_generic(cfg: dict) -> Dataset:
     df = df[np.isfinite(df["_target"])]
     flow("non-finite target removed", df)
     def append(frame, derived, source):
+        """Append the ``derived`` columns to ``frame``; columns that already exist are never overwritten."""
         clash = sorted(set(derived.columns) & set(frame.columns))
         if clash:
             raise ValueError(f"Columns derived by dataset.{source} already exist in the data: {clash}")
@@ -338,6 +373,12 @@ def _with_partitions(cfg: dict, adapter) -> Dataset:
 
 
 def load_dataset(cfg: dict) -> Dataset:
+    """Load the dataset named by ``dataset.adapter`` and prepare it for the pipeline.
+
+    With ``dataset.test_path`` the training and test files are loaded separately and combined. The target
+    transformation is attached, ``dataset.drop_features`` are removed, and every feature is checked to exist and to
+    be numeric or declared categorical.
+    """
     name = cfg["dataset"]["adapter"]
     if name not in ADAPTERS:
         raise KeyError(f"Unknown dataset adapter '{name}'. Available: {sorted(ADAPTERS)}")

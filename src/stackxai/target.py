@@ -26,13 +26,16 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+# Accepted values of dataset.target_transform and dataset.target_smearing.
 TRANSFORMS = ("none", "log")
 SMEARING = ("stratum", "global", "none")
+# Key of the smearing factor estimated on all rows; it is used for strata without a factor of their own.
 ALL = "_all_"
 
 
 @dataclass
 class TargetScale:
+    """Mapping between the report scale and the model scale of the target (see the module docstring)."""
     kind: str = "none"
     scale: float = 1.0          # report unit = original unit * scale
 

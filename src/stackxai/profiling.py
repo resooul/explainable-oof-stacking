@@ -17,10 +17,12 @@ import psutil
 
 
 def rss_mb() -> float:
+    """Resident set size of the current process in MB."""
     return psutil.Process(os.getpid()).memory_info().rss / 2 ** 20
 
 
 class PeakRSS:
+    """Context manager that samples the resident set size every ``interval`` seconds and records its peak."""
     def __init__(self, interval=0.01):
         self.interval, self.peak, self._stop = interval, 0.0, threading.Event()
 
@@ -42,6 +44,7 @@ class PeakRSS:
 
 
 def latency(fn, rows: list, warmup: int) -> dict:
+    """Latency statistics of ``fn`` over ``rows`` in milliseconds, after ``warmup`` untimed calls."""
     for r in rows[:warmup]:
         fn(r)
     t = []
@@ -55,18 +58,21 @@ def latency(fn, rows: list, warmup: int) -> dict:
 
 
 def serialized_mb(obj) -> float:
+    """Size of ``obj`` serialised with joblib, in MB."""
     buf = io.BytesIO()
     joblib.dump(obj, buf)
     return buf.tell() / 2 ** 20
 
 
 def system_info() -> dict:
+    """Platform, processor, Python version, core counts and installed memory of the machine."""
     vm = psutil.virtual_memory()
     return {"platform": platform.platform(), "processor": platform.processor() or platform.machine(),
             "python": platform.python_version(), "physical_cores": psutil.cpu_count(logical=False),
             "logical_cores": psutil.cpu_count(logical=True), "ram_gb": round(vm.total / 2 ** 30, 1)}
 
 
+# State of a profiling worker process: its own pipeline and sample rows.
 _WORKER: dict = {}
 
 
@@ -81,11 +87,13 @@ def _init_worker(run_dir: str):
 
 
 def _ready(_):
+    """Short task used to confirm that every worker process has started before timing begins."""
     time.sleep(0.2)
     return os.getpid()
 
 
 def _predict_row(i: int) -> int:
+    """Predict sample row ``i`` as a single-record request in a worker process."""
     _WORKER["pipe"].predict(_WORKER["X"].iloc[[i]])
     return i
 
@@ -106,6 +114,13 @@ def process_throughput(run_dir: Path, n_rows: int, workers: int) -> float:
 
 
 def profile(run_dir: str | Path, cfg: dict) -> dict:
+    """Profile the deployed pipeline of a finished run and write the results to ``tables/profiling*``.
+
+    Meant to run in a fresh process (``python -m stackxai profile``). Measures single-record latency per stage and
+    end to end with one thread, the latency of every combiner, single-record throughput with threads sharing one
+    pipeline and with processes that each load their own copy, batch throughput, the memory held by the loaded
+    pipeline and the peak memory during batch prediction.
+    """
     run_dir = Path(run_dir)
     p = cfg["profiling"]
     rss0 = rss_mb()

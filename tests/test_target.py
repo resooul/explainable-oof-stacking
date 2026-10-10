@@ -117,7 +117,7 @@ def test_log_target_run_reports_hours(tmp_path, smearing):
     sel = sens[sens.parameter == "(selected)"].set_index("model")["test_RMSE"]
     for m in sel.index:
         assert sel[m] == pytest.approx(perf.loc[m, "RMSE"], rel=1e-9)            # same scale and correction
-    # 1.4: per-stratum tables and grouping columns stored with the predictions
+    # per-stratum tables, and grouping columns stored with the predictions
     bands = pd.read_csv(t / "duration_bands_by_stratum.csv")
     assert {"pickedUp", "delivered"} <= set(bands.stratum) and set(bands.band) <= {"short", "medium", "long"}
     dist = pd.read_csv(t / "target_distribution.csv")

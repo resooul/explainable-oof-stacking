@@ -1,3 +1,4 @@
+"""Checkpointing: completed work is restored, interrupted learners resume, failed learners can be excluded."""
 import numpy as np
 import pandas as pd
 

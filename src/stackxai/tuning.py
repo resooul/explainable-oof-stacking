@@ -20,7 +20,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 def sampler_seed(seed: int, tag: str, tuning: dict) -> int:
     """Seed of the TPE sampler. ``tuning.sampler_seed: per_split`` derives a distinct seed for every search
     (out-of-fold split, final refit, combiner window) from its tag, so that the random start-up configurations
-    differ between searches; ``shared`` (versions up to 1.3) uses the run seed for every search."""
+    differ between searches; ``shared`` uses the run seed for every search."""
     mode = tuning.get("sampler_seed", "shared")
     if mode == "shared":
         return seed
@@ -32,12 +32,13 @@ def sampler_seed(seed: int, tag: str, tuning: dict) -> int:
 def tune(name: str, X: pd.DataFrame, y: np.ndarray, train: np.ndarray, unit_starts: np.ndarray,
          features, categorical, cfg: dict, seed: int, n_trials: int, n_jobs: int,
          space_key: str | None = None, warm_start: dict | None = None, tag: str = "") -> tuple[dict, dict]:
-    """Select hyperparameters using only rows in ``train``.
+    """Select the hyperparameters of learner ``name`` using only the rows in ``train``.
 
-    The most recent ``val_fraction`` of ``train`` is the validation set, the
-    preceding rows (optionally sub-sampled to the most recent ones) the
-    fitting set. Returns refit-ready parameters (boosting rounds scaled to
-    ``len(train)``) and a record of the search.
+    The rows are split chronologically by ``splits.inner_split`` into fitting and validation rows (settings
+    ``tuning.inner_split``, ``val_position``, ``val_fraction``, ``max_rows`` and ``max_val_rows``). Every
+    configuration is fitted on the fitting rows and scored on the validation rows with ``tuning.metric``;
+    iterative learners stop early on the validation rows. ``warm_start`` is evaluated as the first trial.
+    Returns refit-ready parameters, with boosting rounds rescaled to ``len(train)``, and a record of the search.
     """
     t = cfg["tuning"]
     probe = make_learner(name, features, categorical, cfg=t)
@@ -51,6 +52,7 @@ def tune(name: str, X: pd.DataFrame, y: np.ndarray, train: np.ndarray, unit_star
     t0 = time.perf_counter()
 
     def evaluate(params):
+        """Fit one configuration on the fitting rows; return its validation score and early-stopped iteration count."""
         learner = make_learner(name, features, categorical, params, seed, n_jobs, t)
         learner.fit(Xf, yf, Xv if learner.iterative else None, yv if learner.iterative else None)
         return metrics.score(t["metric"], yv, learner.predict(Xv)), learner.best_iteration
@@ -67,6 +69,7 @@ def tune(name: str, X: pd.DataFrame, y: np.ndarray, train: np.ndarray, unit_star
             study.enqueue_trial({k: v for k, v in warm_start.items() if k in space})
 
         def objective(trial):
+            """Optuna objective; the early-stopped iteration count is stored with the trial."""
             s, it = evaluate(sample_space(trial, space))
             trial.set_user_attr("best_iteration", it)
             return s

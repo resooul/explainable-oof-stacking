@@ -14,11 +14,15 @@ import pandas as pd
 
 @dataclass
 class Fold:
+    """Row positions used for fitting (``train``) and for prediction (``valid``) in one split."""
     train: np.ndarray
     valid: np.ndarray
 
 
 def snap(position: int, unit_starts: np.ndarray, n: int) -> int:
+    """First unit start at or after ``position``, or ``n`` if there is none, so that a cut never separates the rows
+    of one group.
+    """
     if position >= n:
         return n
     i = np.searchsorted(unit_starts, position, side="left")
@@ -26,6 +30,9 @@ def snap(position: int, unit_starts: np.ndarray, n: int) -> int:
 
 
 def holdout(n: int, unit_starts: np.ndarray, test_fraction: float) -> tuple[np.ndarray, np.ndarray]:
+    """Chronological hold-out: the most recent ``test_fraction`` of the rows, cut at a unit boundary, form the test
+    partition and all earlier rows the training partition.
+    """
     cut = snap(int(round(n * (1 - test_fraction))), unit_starts, n)
     return np.arange(cut), np.arange(cut, n)
 
@@ -40,6 +47,7 @@ def given_partitions(labels: np.ndarray, times: np.ndarray) -> tuple[np.ndarray,
 
 
 def _cuts(n: int, unit_starts: np.ndarray, k: int) -> list[int]:
+    """Boundaries of ``k`` contiguous blocks of about equal size over ``n`` rows, snapped to unit starts."""
     cuts = [0] + [snap(int(round(i * n / k)), unit_starts, n) for i in range(1, k)] + [n]
     if len(set(cuts)) != len(cuts):
         raise ValueError("Too few units for the requested number of folds")
@@ -47,6 +55,9 @@ def _cuts(n: int, unit_starts: np.ndarray, k: int) -> list[int]:
 
 
 def _purge(train: np.ndarray, valid: np.ndarray, times: np.ndarray | None, gap) -> np.ndarray:
+    """Training rows without those that lie within ``gap`` of the held-out period; nothing is removed when ``gap``
+    is ``None``.
+    """
     if gap is None or times is None:
         return train
     gap = pd.Timedelta(gap)
@@ -98,11 +109,12 @@ def inner_segment(train: np.ndarray, mode: str = "contiguous", min_rows: int = 0
 
     ``contiguous``: the most recent run of consecutive rows (optionally extended
     backwards by earlier runs while it holds fewer than ``min_rows`` rows, which
-    re-introduces the gap and is therefore off by default). Under the blocked
+    brings the hole described below into the inner split and is therefore off by
+    default). Under the blocked
     out-of-fold scheme the training index of an interior fold has a hole where the
     held-out block lies; drawing the inner split across that hole would fit on two
     periods separated in time and validate on a third, which distorts early stopping
-    and the selected configuration. ``all``: every row of ``train`` (legacy behaviour).
+    and the selected configuration. ``all``: every row of ``train``.
     """
     train = np.sort(train)
     if mode == "all":
@@ -134,7 +146,7 @@ def inner_split(train: np.ndarray, unit_starts: np.ndarray, val_fraction: float,
       ``val_fraction`` of it and at most the validation cap) and the fitting set is the
       rows immediately before it. The configuration is therefore judged on the period
       closest to the one it will be used for.
-    * ``after_cut`` (versions up to 1.3): the segment is cut at ``1 - val_fraction``;
+    * ``after_cut``: the segment is cut at ``1 - val_fraction``;
       the validation set is the earliest capped rows after the cut and the fitting set
       the latest capped rows before it, so rows at the end of the segment can remain
       unused.
@@ -179,7 +191,12 @@ def inner_split(train: np.ndarray, unit_starts: np.ndarray, val_fraction: float,
 
 def rolling_origins(n: int, unit_starts: np.ndarray, n_origins: int, test_fraction: float,
                     window: str | float = "expanding") -> list[Fold]:
-    """Rolling-origin evaluation windows that tile the most recent part of the data."""
+    """Rolling-origin evaluation windows that tile the most recent part of the data.
+
+    The most recent ``n_origins * test_fraction`` of the rows is cut into ``n_origins`` consecutive test windows.
+    The training rows of each window are all earlier rows (``expanding``) or, if ``window`` is a fraction, the
+    most recent ``window * n`` rows before it.
+    """
     test_len = int(round(n * test_fraction))
     if test_len * n_origins >= n:
         raise ValueError("rolling.n_origins * rolling.test_fraction must be < 1")
@@ -196,6 +213,7 @@ def rolling_origins(n: int, unit_starts: np.ndarray, n_origins: int, test_fracti
 
 
 def describe_folds(folds: list[Fold], times: np.ndarray, label: str) -> pd.DataFrame:
+    """Size and time span of the training and validation rows of every fold."""
     rows = []
     for i, f in enumerate(folds):
         rows.append({"scheme": label, "fold": i, "n_train": len(f.train), "n_valid": len(f.valid),

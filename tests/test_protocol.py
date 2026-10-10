@@ -1,4 +1,5 @@
-"""Tests of the changes introduced in version 1.4."""
+"""Inner validation split, sampler seeds, search-space overrides, neutral settings in fingerprints, combiner
+selection, shared encoding, profiling and display labels of figures."""
 import numpy as np
 import pandas as pd
 import pytest
@@ -42,7 +43,7 @@ def test_positions_coincide_without_caps():
     assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
 
 
-def test_after_cut_is_the_legacy_behaviour():
+def test_after_cut_is_the_default_position_of_inner_split():
     starts, n = grouped_starts(2000)
     fit, val = inner_split(np.arange(n), starts, 0.2, max_rows=500)          # default position
     assert val.max() < n - 1                                                  # tail rows stay unused
@@ -65,13 +66,13 @@ def test_space_override_replaces_one_parameter():
         resolve_space("RIDGE", {"space_overrides": {"RIDGE": {"alpha": ["float", 5, 1]}}})
 
 
-def test_legacy_values_keep_checkpoint_fingerprints():
-    legacy = deep_merge(DEFAULTS, {"tuning": {"val_position": "after_cut", "sampler_seed": "shared",
+def test_neutral_values_are_left_out_of_fingerprints():
+    neutral = deep_merge(DEFAULTS, {"tuning": {"val_position": "after_cut", "sampler_seed": "shared",
                                               "space_overrides": {}}})
-    section = stable_section(legacy, "tuning")
+    section = stable_section(neutral, "tuning")
     assert not {"val_position", "sampler_seed", "space_overrides"} & set(section)
-    new = stable_section(DEFAULTS, "tuning")
-    assert new["val_position"] == "latest" and new["sampler_seed"] == "per_split"
+    defaults = stable_section(DEFAULTS, "tuning")
+    assert defaults["val_position"] == "latest" and defaults["sampler_seed"] == "per_split"
 
 
 def test_combiner_selection_must_be_a_computed_scheme(tmp_path):
@@ -110,10 +111,10 @@ def test_shared_encoding_gives_identical_predictions():
     X_new = X.iloc[:200].copy()
     X_new.loc[X_new.index[:10], "c"] = "unseen"                              # unseen categorical levels
     X_new.loc[X_new.index[10:20], "d"] = 999
-    legacy = np.column_stack([b.predict(X_new) for b in bases])
-    assert np.allclose(pipe.base_matrix(X_new), legacy, rtol=0, atol=1e-9)
+    direct = np.column_stack([b.predict(X_new) for b in bases])
+    assert np.allclose(pipe.base_matrix(X_new), direct, rtol=0, atol=1e-9)
     single = [pipe.base_matrix(X_new.iloc[[i]])[0] for i in range(5)]
-    assert np.allclose(np.vstack(single), legacy[:5], rtol=0, atol=1e-9)
+    assert np.allclose(np.vstack(single), direct[:5], rtol=0, atol=1e-9)
 
 
 def test_pipeline_falls_back_when_a_learner_cannot_share_the_encoding():

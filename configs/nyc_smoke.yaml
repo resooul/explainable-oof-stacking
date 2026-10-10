@@ -1,4 +1,6 @@
-# Minutes-scale end-to-end check on a subsample; not intended for reporting.
+# Quick end-to-end check of the pipeline on a 30,000-row subsample of the NYC data; runs in minutes.
+# Not intended for reporting. Settings not given here take the package defaults, so the inner validation split,
+# the sampler seeds and the combiner selection follow configs/ssd.yaml rather than configs/nyc.yaml.
 run:
   name: nyc_smoke
   n_jobs: 2
@@ -17,7 +19,7 @@ tuning:
   max_estimators: 400
   n_trials: {LGBM: 3, XGB: 3, CAT: 2, RF: 2, DT: 2, RIDGE: 2}
 
-base_learners: [LGBM, XGB, CAT, RF, DT, OLS, RIDGE]
+base_learners: [LGBM, XGB, CAT, RF, DT, OLS, RIDGE]   # deep learners and EBM are omitted to keep the run short
 
 stacking:
   meta_trials: 3

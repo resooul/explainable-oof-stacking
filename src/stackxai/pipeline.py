@@ -25,11 +25,15 @@ from .stats import paired_comparison
 from .target import smearing_factors, to_report
 
 log = logging.getLogger("stackxai")
+# Packages whose installed versions are recorded in environment.json.
 PACKAGES = ["numpy", "pandas", "scipy", "scikit-learn", "lightgbm", "xgboost", "catboost", "optuna", "shap",
             "torch", "pytorch-tabnet", "rtdl_revisiting_models", "interpret"]
 
 
 def _setup(cfg: dict) -> Path:
+    """Create the output directories of the run, log to the console and to ``run.log``, and record the resolved
+    configuration, the installed package versions, the configuration hash and the git commit.
+    """
     run_dir = Path(cfg["run"]["output_dir"]) / cfg["run"]["name"]
     for sub in ("tables", "figures", "models", "predictions"):
         (run_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -63,6 +67,10 @@ def _setup(cfg: dict) -> Path:
 
 
 def _data_tables(ds: Dataset, train, test, rep: reporting.Reporter):
+    """Tables that describe the data: cleaning flow, target distribution by partition (and stratum), features with
+    missingness and binary prevalence, and, for categorical features, level concentration, overlap between
+    partitions and per-level prevalence.
+    """
     rep.table(pd.DataFrame(ds.flow), "data_flow", "Data cleaning flow", digits=0)
     y, t = ds.y_report, ds.times
     q = [0, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 1]
@@ -118,7 +126,8 @@ def _data_tables(ds: Dataset, train, test, rep: reporting.Reporter):
 
 
 def deployable(ds: Dataset, res: StackResult, cfg: dict, meta_name: str) -> StackedPipeline:
-    """End-to-end predictor returning report-scale predictions."""
+    """Deployable pipeline of the selected base learners and the combiner ``meta_name``, returning report-scale
+    predictions with the combiner's smearing factors."""
     factors = ReportScale(ds, res, cfg).factors.get(meta_name)
     return StackedPipeline([res.bases[b].model for b in res.selected], res.metas[meta_name].model, ds.features,
                            cfg["evaluation"]["clip_min"], meta_name, ds.transform, factors, ds.strata_col)
@@ -150,16 +159,20 @@ class ReportScale:
                             y[rows], m.oos, None if self.strata is None else self.strata[rows], mode)
 
     def convert(self, name: str, p_model: np.ndarray, rows: np.ndarray) -> np.ndarray:
+        """Report-scale predictions of model ``name`` for the rows ``rows``."""
         strata = None if self.strata is None else self.strata[rows]
         return to_report(p_model, self.ts, self.factors.get(name), strata, self.clip)
 
     def test(self) -> dict[str, np.ndarray]:
+        """Report-scale test predictions of every base learner and combiner."""
         return {k: self.convert(k, v, self.res.test) for k, v in self.res.test_predictions().items()}
 
     def oof(self, name: str) -> np.ndarray:
+        """Report-scale out-of-fold predictions of base learner ``name``."""
         return self.convert(name, self.res.bases[name].oof, self.res.train)
 
     def table(self) -> pd.DataFrame:
+        """Smearing factors per model and stratum, as a table."""
         return pd.DataFrame([{"model": m, "stratum": k, "factor": v} for m, f in self.factors.items()
                              for k, v in f.items()])
 
@@ -171,6 +184,14 @@ def select_combiner(selection: StackResult) -> str:
 
 def _evaluate(ds: Dataset, res: StackResult, cfg: dict, rep: reporting.Reporter, run_dir: Path,
               selection: StackResult | None = None) -> dict:
+    """Evaluate the main stack on the test partition and write tables, figures and predictions.
+
+    Covers the base learners out of fold and on test, performance per fold, the main comparison, combiner selection,
+    learned weights, correlations of the base predictions, paired statistical tests, duration bands (overall and
+    within each stratum), and performance by stratum, by training frequency of categorical levels and by calendar
+    period. ``selection`` is the stack whose out-of-fold predictions choose the combiner (``res`` if not given).
+    Returns the reference learner, the selected combiner and the scheme it was selected on.
+    """
     ev, clip = cfg["evaluation"], cfg["evaluation"]["clip_min"]
     y, train, test = ds.y_report, res.train, res.test
     y_tr, y_te = y[train], y[test]
@@ -356,6 +377,7 @@ def _evaluate(ds: Dataset, res: StackResult, cfg: dict, rep: reporting.Reporter,
     keep = list(dict.fromkeys(c for c in (ds.strata_col, ds.cluster_col, ds.group_col, *ds.categorical) if c))
 
     def groups(rows, taken):
+        """Grouping columns of ``rows``; a name that clashes with a model in ``taken`` gets a ``group:`` prefix."""
         return {(f"group:{c}" if c in taken else c): ds.frame[c].to_numpy()[rows] for c in keep}
 
     pd.DataFrame({"time": ds.times[test], "y": y_te, **preds, **groups(test, preds)}).to_parquet(
@@ -366,6 +388,7 @@ def _evaluate(ds: Dataset, res: StackResult, cfg: dict, rep: reporting.Reporter,
 
 
 def _tuning_tables(ds: Dataset, res: StackResult, cfg: dict, rep: reporting.Reporter):
+    """Tables of the hyperparameters selected in every search, the search spaces and the training cost."""
     rows = [r for b in res.bases.values() for r in b.tuning]
     tab = pd.DataFrame(rows)
     t = ds.times
@@ -384,6 +407,7 @@ def _tuning_tables(ds: Dataset, res: StackResult, cfg: dict, rep: reporting.Repo
 
 
 def _scheme_table(ds: Dataset, stacks: dict[str, StackResult], cfg: dict, rep: reporting.Reporter):
+    """Test performance of the selected base learners and the combiners under every out-of-fold scheme."""
     frames = []
     for scheme, res in stacks.items():
         keep = res.selected + list(res.metas)
@@ -394,16 +418,21 @@ def _scheme_table(ds: Dataset, stacks: dict[str, StackResult], cfg: dict, rep: r
               "Sensitivity to the out-of-fold scheme (blocked K-fold vs. forward-chaining)")
 
 
+# Base learners with exact TreeSHAP support.
 TREE_LEARNERS = ("LGBM", "XGB", "CAT")
 MAX_PREVALENCE_LEVELS = 20   # categorical features with at most this many levels get a per-level prevalence table
 
 
 def shap_seed_model(selected: list[str]) -> str | None:
-    """The reference learner if it supports TreeSHAP, otherwise the first selected tree learner."""
+    """The reference learner if it supports TreeSHAP, otherwise the first selected tree learner, or ``None``."""
     return next((m for m in selected if m in TREE_LEARNERS), None)
 
 
 def _robustness(ds, res, cfg, cache, rep, explain_idx):
+    """Refit the selected base learners and every combiner with the other seeds of ``robustness.seeds``, keeping all
+    hyperparameters fixed, and report test performance per seed, its mean and spread, and the stability of the
+    TreeSHAP importance ranking across seeds.
+    """
     seeds = [s for s in cfg["robustness"]["seeds"] if s != cfg["run"]["seed"]]
     frozen = frozen_params(res)
     frozen["base"] = {k: v for k, v in frozen["base"].items() if k in res.selected}
@@ -461,6 +490,14 @@ def rolling_reference(spec: str, main_reference: str, origin_selected: list[str]
 
 
 def _rolling(ds, cfg, cache, rep, selected):
+    """Rolling-origin evaluation, separate from the main experiment.
+
+    At every origin the complete pipeline (tuning with one search per model family, out-of-fold predictions,
+    base-learner selection, combiners and combiner selection) is rebuilt from the earlier rows and evaluated on the
+    following window. Reports performance per origin, the learners selected at each origin, the protocol-selected
+    combiner compared with the reference and with the best single learner in hindsight, and a summary over the
+    origins.
+    """
     r = cfg["rolling"]
     learners = rolling_learners(r["base_learners"], selected, cfg["base_learners"])
     fixed_ref = rolling_reference(r["reference"], selected[0], selected)
@@ -527,6 +564,13 @@ def _rolling(ds, cfg, cache, rep, selected):
 
 
 def _explain(ds, res, cfg, rep, info, explain_idx) -> StackedPipeline:
+    """Three-level SHAP analysis of the main stack on a sample of test rows.
+
+    TreeSHAP of the selected gradient-boosting base learners, attribution of every combiner's output to the base
+    predictions, and permutation SHAP of the complete deployed pipeline, together with the agreement of their
+    importance rankings. Explanations are stored so that their figures can be redrawn. Returns the deployed
+    pipeline.
+    """
     e = cfg["explain"]
     rng = np.random.default_rng(cfg["run"]["seed"])
     X_s = ds.X.iloc[explain_idx]
@@ -551,6 +595,9 @@ def _explain(ds, res, cfg, rep, info, explain_idx) -> StackedPipeline:
     store.mkdir(exist_ok=True)
 
     def draw(ex, name, **args):
+        """Store an explanation and draw its figures; meta-level figures show base learners under their display
+        names.
+        """
         explain.save_explanation(store / f"{name}.joblib", ex, **args)
         shown = {**labels, **{m: reporting.model_label(m) for m in res.selected}} if name.startswith("shap_meta") \
             else labels
@@ -642,6 +689,14 @@ def redraw(run_dir: Path, config: str | None = None):
 
 
 def run(cfg: dict, resume: bool = True) -> Path:
+    """Run the complete experiment described by ``cfg`` and return its output directory.
+
+    The data are loaded and the most recent rows held out (or the user-supplied test file is used). Out-of-fold
+    predictions and combiners are produced under every configured scheme, the main stack is evaluated on the test
+    partition, and the optional robustness, rolling-origin, sensitivity, explanation and profiling analyses follow.
+    With ``run.stop_after: base_learners`` the run stops once the base learners are checkpointed. With ``resume``
+    completed units are restored from their checkpoints.
+    """
     run_dir = _setup(cfg)
     rep = reporting.Reporter(run_dir)
     cache = Cache(run_dir / "cache", resume)

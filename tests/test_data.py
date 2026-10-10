@@ -1,3 +1,4 @@
+"""Dataset adapters: distances, user-supplied partitions and target files, and rejection of invalid input."""
 import numpy as np
 import pandas as pd
 import pytest

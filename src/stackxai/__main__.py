@@ -1,4 +1,4 @@
-"""Command-line interface: ``python -m stackxai {run,profile,spaces}``."""
+"""Command-line interface: ``python -m stackxai {run,profile,spaces,plots}``."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,7 @@ from .config import load_config
 
 
 def main(argv=None):
+    """Parse the command line and run the chosen command; ``argv`` defaults to ``sys.argv``."""
     parser = argparse.ArgumentParser(prog="stackxai", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     r = sub.add_parser("run", help="run the full experiment")

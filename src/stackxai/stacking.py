@@ -19,12 +19,18 @@ from .splits import Fold, snap, temporal_folds
 from .tuning import tune
 
 log = logging.getLogger(__name__)
+# Gradient-boosting combiners: name -> (learner, search space), and every combiner accepted by
+# stacking.meta_learners.
 META_TREES = {"EN_LGBM": ("LGBM", "META_LGBM"), "EN_XGB": ("XGB", "META_XGB"), "EN_CAT": ("CAT", "META_CAT")}
 META_LEARNERS = ("EN_AVG", "EN_WAVG", "EN_LIN", "EN_SLR", *META_TREES)
 
 
 @dataclass
 class BaseResult:
+    """Results of one base learner under one out-of-fold scheme: out-of-fold predictions on the training partition
+    (NaN for rows without one), test predictions of the final refit, the hyperparameters of every fold and of the
+    refit, tuning records, timings and, if kept, the refitted model.
+    """
     name: str
     oof: np.ndarray
     test: np.ndarray
@@ -37,6 +43,10 @@ class BaseResult:
 
 @dataclass
 class MetaResult:
+    """Results of one combiner: test predictions, hyperparameters, selection score (mean over the selection windows)
+    with its record per window, timings, the fitted combiner and its out-of-sample predictions on the selection
+    windows.
+    """
     name: str
     test: np.ndarray
     params: dict
@@ -50,6 +60,10 @@ class MetaResult:
 
 @dataclass
 class StackResult:
+    """Everything one out-of-fold scheme produces: partitions and folds, the results of every base learner and
+    combiner, the selected base learners (the reference first), the training rows used as meta-rows, and the
+    learners that failed.
+    """
     scheme: str
     seed: int
     train: np.ndarray
@@ -62,14 +76,19 @@ class StackResult:
     failed: dict[str, str] = field(default_factory=dict)
 
     def test_predictions(self, clip_min=None) -> dict[str, np.ndarray]:
+        """Test predictions of every base learner and combiner, optionally clipped from below at ``clip_min``."""
         out = {k: v.test for k, v in self.bases.items()} | {k: v.test for k, v in self.metas.items()}
         return {k: (np.maximum(v, clip_min) if clip_min is not None else v) for k, v in out.items()}
 
     def oof_matrix(self) -> np.ndarray:
+        """Out-of-fold predictions of the selected base learners, one column each; these are the inputs of the
+        combiners.
+        """
         return np.column_stack([self.bases[b].oof for b in self.selected])
 
 
 def _strip(params: dict) -> dict:
+    """``params`` without the number of boosting rounds, which is set again for every fit."""
     return {k: v for k, v in params.items() if k != "n_estimators"}
 
 
@@ -103,6 +122,11 @@ def run_base(name: str, ds: Dataset, train: np.ndarray, test: np.ndarray, folds:
         timing["tuning_s"] += final_info["tuning_seconds"]
 
     def fold_unit(i: int, f: Fold, warm: dict | None):
+        """Hyperparameters, tuning record, predictions for the held-out rows and fit time of fold ``i``. Under
+        nested tuning the fold has its own search, which under forward chaining starts from the previous fold's
+        configuration (``tuning.warm_start``); otherwise the final hyperparameters are used with boosting rounds
+        rescaled to the fold size.
+        """
         info_f = None
         if fixed is not None:
             p = fixed[0][i]
@@ -131,6 +155,7 @@ def run_base(name: str, ds: Dataset, train: np.ndarray, test: np.ndarray, folds:
         warm = p
 
     def final_unit():
+        """Fit the final model on the whole training partition and predict the test partition."""
         t0 = time.perf_counter()
         learner = make_learner(name, ds.features, ds.categorical, final_params, seed, n_jobs, cfg["tuning"])
         learner.fit(X.iloc[train], y[train])
@@ -159,14 +184,18 @@ def base_fingerprint(ds: Dataset, cfg: dict, name: str, scheme: str, seed: int, 
 
 
 def select_top_k(bases: dict[str, BaseResult], y_train: np.ndarray, metric: str, k: int) -> tuple[list[str], pd.DataFrame]:
-    """Rank candidates on out-of-fold predictions (training partition only)."""
+    """Rank the candidates by their out-of-fold score on the training partition, using the rows for which every
+    candidate has a prediction, and return the ``k`` best together with the full ranking."""
     mask = np.all(np.column_stack([np.isfinite(b.oof) for b in bases.values()]), axis=1)
     scores = {n: metrics.score(metric, y_train[mask], b.oof[mask]) for n, b in bases.items()}
     ranking = pd.Series(scores).sort_values()
     return list(ranking.index[:k]), ranking.rename("oof_score").to_frame()
 
 
+# The combiners share one interface: fit(Z, y) on a matrix of base predictions, predict(Z), and weights, the
+# learned linear weights (None for combiners without them).
 class AverageMeta:
+    """Simple average of the base predictions (EN_AVG)."""
     def fit(self, Z, y):
         return self
 
@@ -179,7 +208,8 @@ class AverageMeta:
 
 
 class WeightedAverageMeta:
-    """Convex combination with weights optimised on out-of-fold predictions."""
+    """Convex combination (EN_WAVG): non-negative weights summing to one, optimised on the out-of-fold
+    predictions for the loss ``stacking.wavg_objective``."""
 
     def __init__(self, objective="mse"):
         self.objective = objective
@@ -205,7 +235,8 @@ class WeightedAverageMeta:
 
 
 class LinearMeta:
-    """Least-squares stacking with intercept: non-negative weights (Breiman, 1996) or unconstrained."""
+    """Least-squares stacking with intercept: non-negative weights (EN_LIN; Breiman, 1996) or unconstrained
+    weights (EN_SLR)."""
 
     def __init__(self, positive: bool = True):
         self.positive = positive
@@ -224,6 +255,7 @@ class LinearMeta:
 
 
 class TreeMeta:
+    """Gradient-boosting combiner (EN_LGBM, EN_XGB, EN_CAT) whose features are the base-learner predictions."""
     def __init__(self, learner: Learner):
         self.learner = learner
 
@@ -235,9 +267,11 @@ class TreeMeta:
         return self.learner.predict(self._frame(Z))
 
     def _frame(self, Z):
+        """Base predictions as a frame whose columns are named after the base learners."""
         return pd.DataFrame(np.asarray(Z), columns=self.learner.features)
 
     def contributions(self, Z):
+        """TreeSHAP values of the base predictions and the base value."""
         return self.learner.contributions(self._frame(Z))
 
     def set_inference_threads(self, n):
@@ -249,6 +283,9 @@ class TreeMeta:
 
 
 def build_meta(name: str, base_names: list[str], params: dict, cfg: dict, seed: int):
+    """Instantiate the combiner ``name`` for the base learners ``base_names``; ``params`` holds the hyperparameters
+    of a gradient-boosting combiner.
+    """
     if name == "EN_AVG":
         return AverageMeta()
     if name == "EN_WAVG":
@@ -290,6 +327,7 @@ def _tune_meta(name, Z, y, rows, starts, base_names, cfg, seed, tag):
 
 
 def _scaled(name, tuned, info, n_target, cfg):
+    """Hyperparameters of a gradient-boosting combiner, with boosting rounds rescaled to ``n_target`` rows."""
     return refit_params(META_TREES[name][0], tuned, info.get("best_iteration"), info.get("inner_fit_rows", 1),
                         n_target, cfg["tuning"])
 
@@ -304,7 +342,7 @@ def run_meta(name: str, Z: np.ndarray, y: np.ndarray, Z_test: np.ndarray, base_n
       consecutive windows (``meta_selection_windows``); for each window the combiner is fitted
       (and, for tree meta-learners, tuned) on all earlier rows only and scored on the window. The
       selection score is the mean over windows, so the choice does not hinge on a single period.
-    * ``holdout``: one chronological hold-out, the most recent ``meta_val_fraction`` (v1.1 behaviour).
+    * ``holdout``: one chronological hold-out, the most recent ``meta_val_fraction``.
 
     In both modes no row used to score a combiner influences its fitting or tuning. The final
     combiner is then tuned (tree meta-learners) and fitted on the whole meta-dataset.
@@ -341,7 +379,7 @@ def run_meta(name: str, Z: np.ndarray, y: np.ndarray, Z_test: np.ndarray, base_n
     info = None
     params = dict(fixed or {})
     if tree and s["meta_selection"] == "holdout":
-        # v1.1 behaviour: the configuration tuned on the fitting part, rescaled to all meta-rows
+        # hold-out mode: the configuration tuned on the rows before the hold-out, rescaled to all meta-rows
         params, info = _scaled(name, *tuned_last, n, cfg), tuned_last[1]
     elif tree:
         tuned, info = _tune_meta(name, Z, y, np.arange(n), starts, base_names, cfg, seed, f"meta/{name}")
@@ -364,6 +402,12 @@ def run_stack(ds: Dataset, train: np.ndarray, test: np.ndarray, cfg: dict, schem
     Base learners run in the configured order. With a ``cache``, every tuning,
     fold and refit unit is checkpointed, so an interrupted run resumes at the
     first unfinished unit and completed learners are skipped.
+
+    ``fixed`` reuses the hyperparameters of another stack (see ``frozen_params``),
+    ``selected`` replaces the top-k selection, ``reuse_final`` reuses the refitted
+    models of another scheme, and ``base_only`` stops after the base learners.
+    The combiners are fitted on the training rows for which every selected base
+    learner has an out-of-fold prediction.
     """
     y = ds.y
     cache = cache or Cache(None)
@@ -410,12 +454,19 @@ def run_stack(ds: Dataset, train: np.ndarray, test: np.ndarray, cfg: dict, schem
 
 
 def frozen_params(res: StackResult) -> dict:
+    """Hyperparameters of every base learner (per fold and final) and of every combiner of ``res``, so that the
+    stack can be refitted, e.g. with another seed, without new searches.
+    """
     return {"base": {k: (b.fold_params, b.final_params) for k, b in res.bases.items()},
             "meta": {k: m.params for k, m in res.metas.items()}}
 
 
 class StackedPipeline:
-    """Deployable end-to-end predictor: raw features -> base learners -> meta-learner."""
+    """Deployable end-to-end predictor: raw features -> base learners -> combiner.
+
+    ``predict`` returns report-scale predictions, retransformed and smearing-corrected (per stratum when
+    ``strata_col`` is given); ``predict_model`` returns the model-scale output used for explanations.
+    """
 
     def __init__(self, bases: list[Learner], meta, features: list[str], clip_min=None, name="",
                  transform: TargetScale | None = None, smearing: dict | None = None, strata_col: str | None = None):
@@ -429,9 +480,13 @@ class StackedPipeline:
                 and all(bases[0].encoder.same_vocabulary(b.encoder) for b in bases[1:]))
 
     def encode(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Encoding shared by all base learners; valid when ``shares_encoding()`` is true."""
         return self.bases[0].encoder.transform(X)
 
     def base_matrix(self, X: pd.DataFrame) -> np.ndarray:
+        """Predictions of every base learner for ``X``, one column each; rows are encoded once when the encoding is
+        shared.
+        """
         if self.shares_encoding():
             Z = self.encode(X)
             return np.column_stack([b.predict_encoded(Z) for b in self.bases])
@@ -449,6 +504,7 @@ class StackedPipeline:
         return to_report(self.predict_model(X), ts, getattr(self, "smearing", None), strata, self.clip_min)
 
     def set_inference_threads(self, n: int):
+        """Number of prediction threads of every base learner and of the combiner."""
         for b in self.bases:
             b.set_inference_threads(n)
         if hasattr(self.meta, "set_inference_threads"):

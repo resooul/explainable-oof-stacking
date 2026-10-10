@@ -25,7 +25,9 @@ log = logging.getLogger(__name__)
 
 
 def variants(value, spec, log_factors, linear_step) -> list:
-    """Values on both sides of ``value`` within the search range ``spec``."""
+    """Values on both sides of ``value`` within the search range ``spec``: ``value`` times each of
+    ``log_factors`` for log-scaled ranges, otherwise ``value`` plus and minus ``linear_step`` times the range
+    width. Values are clipped to the range, and integers are rounded to its grid."""
     kind, lo, hi, *step = spec
     if kind.endswith("_log"):
         cand = [value * f for f in log_factors]
@@ -46,7 +48,9 @@ def variants(value, spec, log_factors, linear_step) -> list:
 
 
 def run_sensitivity(ds, res, cfg: dict, cache: Cache | None = None, scale=None) -> pd.DataFrame:
-    """``scale`` (a pipeline.ReportScale) converts model-scale predictions to the report scale; every variant
+    """Sensitivity table of the selected base learners (see the module docstring); every variant is checkpointed.
+
+    ``scale`` (a pipeline.ReportScale) converts model-scale predictions to the report scale; every variant
     of a learner uses that learner's smearing factors, so variants differ only in their hyperparameters."""
     s, t = cfg["sensitivity"], cfg["tuning"]
     cache = cache or Cache(None)
@@ -85,6 +89,9 @@ def run_sensitivity(ds, res, cfg: dict, cache: Cache | None = None, scale=None) 
                                  name, trial, seed, rows_hash, *extra)
 
                 def unit(trial=trial):
+                    """Fit one variant: early stopping on the inner split, refit on the training partition,
+                    evaluation on the test partition.
+                    """
                     t0 = time.perf_counter()
                     lr = make_learner(name, ds.features, ds.categorical, trial, seed, n_jobs, t)
                     lr.fit(X.iloc[fit_idx], y[fit_idx], X.iloc[val_idx] if lr.iterative else None,

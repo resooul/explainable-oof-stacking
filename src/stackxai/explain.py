@@ -20,6 +20,9 @@ from .models import TabularEncoder
 from .stacking import AverageMeta, LinearMeta, StackedPipeline, TreeMeta
 
 def tree_shap(learner, X: pd.DataFrame) -> shap.Explanation:
+    """Exact TreeSHAP values of a gradient-boosting base learner on the original features, computed by the model's
+    own library.
+    """
     values, base = learner.contributions(X)
     return shap.Explanation(values=values, base_values=np.broadcast_to(base, len(values)).copy(),
                             data=learner.encoder.to_numeric(X), display_data=_display(X, learner.features),
@@ -27,6 +30,7 @@ def tree_shap(learner, X: pd.DataFrame) -> shap.Explanation:
 
 
 def _display(X: pd.DataFrame, features) -> np.ndarray:
+    """Original feature values of ``X`` as objects, used to label plots."""
     return X[list(features)].astype(object).to_numpy()
 
 
@@ -48,6 +52,13 @@ def meta_shap(meta, Z: np.ndarray, names: list[str], Z_reference: np.ndarray) ->
 
 def pipeline_shap(pipe: StackedPipeline, encoder: TabularEncoder, X_explain: pd.DataFrame,
                   X_background: pd.DataFrame, permutations: int, seed: int) -> shap.Explanation:
+    """Permutation SHAP values of the complete pipeline, from the original features through the base learners and
+    the combiner, on the model scale.
+
+    Each row of ``X_explain`` is explained against the rows of ``X_background`` (interventional value function) with
+    ``permutations`` antithetic permutations, i.e. ``permutations * (2 * F + 1)`` pipeline evaluations per row for F
+    features.
+    """
     A_bg, A = encoder.to_numeric(X_background), encoder.to_numeric(X_explain)
     # explained on the model scale, like the TreeSHAP explanations of the base learners it is compared with
     predict = getattr(pipe, "predict_model", pipe.predict)
@@ -61,10 +72,14 @@ def pipeline_shap(pipe: StackedPipeline, encoder: TabularEncoder, X_explain: pd.
 
 
 def importance(ex: shap.Explanation) -> pd.Series:
+    """Mean absolute SHAP value of every feature, in decreasing order."""
     return pd.Series(np.abs(ex.values).mean(axis=0), index=ex.feature_names).sort_values(ascending=False)
 
 
 def agreement(a: pd.Series, b: pd.Series, k: int) -> dict:
+    """Agreement of two importance rankings over their common features: Spearman's rho, Kendall's tau, the Jaccard
+    overlap of the ``k`` most important features, and whether the most important feature is the same.
+    """
     common = a.index.intersection(b.index)
     a, b = a[common], b[common]
     top_a, top_b = set(a.nlargest(k).index), set(b.nlargest(k).index)
@@ -73,6 +88,7 @@ def agreement(a: pd.Series, b: pd.Series, k: int) -> dict:
 
 
 def _save(fig_path: str):
+    """Save the current figure as PNG and PDF under ``fig_path`` and close it."""
     fig = plt.gcf()
     fig.savefig(fig_path + ".png", dpi=200, bbox_inches="tight")
     fig.savefig(fig_path + ".pdf", bbox_inches="tight")
@@ -118,7 +134,13 @@ def save_explanation(path, ex: shap.Explanation, **plot_args):
 
 def plot_explanation(ex: shap.Explanation, prefix: str, dependence_top: int = 0, waterfall_index: int | None = None,
                      max_display: int = 20, labels: dict | None = None, value_labels: dict | None = None):
-    # no titles and no parenthesised descriptions in axis labels: the caption and the text give them
+    """Bar and beeswarm plots of ``ex``, dependence plots of its ``dependence_top`` most important features and,
+    with ``waterfall_index``, the waterfall plot of that row.
+
+    Files are named ``<prefix>_<plot>``; dependence plots keep the column name of the feature in their file name
+    even when ``labels`` gives it a display name.
+    """
+    # figures carry no titles and plain axis labels, so that captions can describe them
     order = list(importance(ex).index[:dependence_top])          # raw names, used for file names
     raw_names = list(ex.feature_names)
     ex = relabel(ex, labels, value_labels)
@@ -144,6 +166,7 @@ def plot_explanation(ex: shap.Explanation, prefix: str, dependence_top: int = 0,
 
 
 def seed_stability(importances: dict[int, pd.Series]) -> pd.DataFrame:
+    """Pairwise agreement of the importance rankings obtained with different random seeds."""
     seeds = sorted(importances)
     rows = []
     for i, a in enumerate(seeds):

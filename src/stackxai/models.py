@@ -12,6 +12,9 @@ import warnings
 import numpy as np
 import pandas as pd
 
+# Built-in hyperparameter search spaces: parameter -> (kind, low, high[, step]). ``kind`` is int, int_log, float
+# or float_log, where _log means sampling on a logarithmic scale. META_* spaces belong to the gradient-boosting
+# combiners. tuning.space_overrides replaces or adds single parameters (see resolve_space).
 SPACES: dict[str, dict] = {
     "LGBM": {"num_leaves": ("int_log", 15, 1023), "learning_rate": ("float_log", 0.02, 0.2),
              "min_child_samples": ("int_log", 5, 1000), "subsample": ("float", 0.6, 1.0),
@@ -50,6 +53,7 @@ SPACES: dict[str, dict] = {
 
 
 def sample_space(trial, space: dict) -> dict:
+    """Draw one configuration from ``space`` with the Optuna ``trial``."""
     params = {}
     for name, (kind, lo, hi, *step) in space.items():
         if kind == "int":
@@ -87,6 +91,7 @@ def resolve_space(key: str, tuning: dict | None = None) -> dict:
 
 
 def space_table(tuning: dict | None = None) -> pd.DataFrame:
+    """Every search space, with the overrides of ``tuning`` applied, as a table for reporting."""
     keys = list(SPACES) + [k for k in ((tuning or {}).get("space_overrides") or {}) if k not in SPACES]
     rows = [{"model": m, "parameter": p, "scale": k.replace("_log", " (log)"), "low": lo, "high": hi,
              "step": s[0] if s else None}
@@ -112,30 +117,35 @@ class TabularEncoder:
             dtype = s.cat.categories.dtype
             if dtype != "category":
                 try:
-                    return s.astype(dtype)           # the conversion used when the models were trained
+                    return s.astype(dtype)           # back to the dtype of the levels themselves
                 except (TypeError, ValueError):      # integer categories with missing values (e.g. rows rebuilt
                     pass                             # from codes for permutation SHAP): keep values as objects
             return pd.Series(np.asarray(s, dtype=object), index=s.index, name=s.name)
         return s
 
     def fit(self, X: pd.DataFrame) -> "TabularEncoder":
+        """Fit the vocabulary of every categorical feature: the sorted levels observed in ``X``."""
         self.categories = {c: pd.Index(pd.unique(self._plain(X[c]).dropna())).sort_values()
                            for c in self.categorical}
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Feature columns of ``X``: numeric features as floats, categorical features as pandas categories over the
+        fitted vocabulary, with unseen levels set to missing.
+        """
         out = X[self.features].copy()
         for c in self.numeric:
             out[c] = out[c].astype(float)
         for c in self.categorical:
             cats = self.categories[c]
-            if isinstance(cats, pd.CategoricalIndex):          # vocabulary pickled by an earlier version
+            if isinstance(cats, pd.CategoricalIndex):          # a vocabulary stored as a CategoricalIndex
                 cats = pd.Index(np.asarray(cats))
             v = self._plain(out[c])
             out[c] = pd.Categorical(v.where(v.isin(cats)), categories=cats)
         return out
 
     def same_vocabulary(self, other: "TabularEncoder") -> bool:
+        """True if ``other`` encodes the same features with the same vocabularies."""
         return (self.features == other.features and self.categorical == other.categorical
                 and all(self.categories[c].equals(other.categories[c]) for c in self.categorical))
 
@@ -156,6 +166,9 @@ class TabularEncoder:
         return A
 
     def from_numeric(self, A: np.ndarray) -> pd.DataFrame:
+        """Inverse of ``encoded_to_numeric``: rebuild encoded rows from a float matrix, in which NaN codes become
+        missing levels.
+        """
         cols = {}
         for j, c in enumerate(self.features):
             if c in self.categories:
@@ -173,6 +186,14 @@ def as_labels(col: pd.Series) -> pd.Series:
 
 
 class Learner:
+    """Common interface of every base learner.
+
+    ``fit`` fits the encoder on the training rows and then the model (``_fit``), using validation rows, if given,
+    for early stopping; ``predict`` applies the same encoding to new rows. Iterative learners record the
+    early-stopped number of boosting rounds or epochs in ``best_iteration``. ``space`` is the hyperparameter search
+    space. ``shares_encoding`` marks learners whose ``predict`` is ``encoder.transform`` followed by ``_predict``,
+    so that a request can be encoded once for several learners.
+    """
     name = "base"
     space_key: str | None = None
     iterative = False
@@ -189,9 +210,11 @@ class Learner:
 
     @property
     def space(self) -> dict:
+        """Search space of the learner, with ``tuning.space_overrides`` applied."""
         return resolve_space(self.space_key or self.name, self.cfg)
 
     def fit(self, X, y, X_val=None, y_val=None) -> "Learner":
+        """Fit the encoder and the model on ``X`` and ``y``; validation rows, if given, are used for early stopping."""
         self.encoder.fit(X)
         self._fit(self.encoder.transform(X), np.asarray(y, float),
                   None if X_val is None else self.encoder.transform(X_val),
@@ -199,6 +222,7 @@ class Learner:
         return self
 
     def predict(self, X) -> np.ndarray:
+        """Predictions for raw feature rows ``X``."""
         return np.asarray(self._predict(self.encoder.transform(X)), dtype=float).ravel()
 
     def predict_encoded(self, Z: pd.DataFrame) -> np.ndarray:
@@ -206,22 +230,31 @@ class Learner:
         return np.asarray(self._predict(Z), dtype=float).ravel()
 
     def set_inference_threads(self, n: int):
+        """Number of threads used for prediction; learners without such a setting ignore it."""
         pass
 
     def _fit(self, X, y, X_val, y_val):
+        """Fit the model on encoded rows; implemented by every learner."""
         raise NotImplementedError
 
     def _predict(self, X):
+        """Predictions for encoded rows."""
         return self.model.predict(X)
 
 
 def _n_estimators(learner: Learner, has_val: bool) -> int:
+    """Number of boosting rounds to fit: ``tuning.max_estimators`` when validation rows allow early stopping,
+    otherwise the ``n_estimators`` parameter found during tuning.
+    """
     if has_val:
         return int(learner.cfg.get("max_estimators", 5000))
     return int(learner.params.get("n_estimators", 1000))
 
 
 def _lgbm_supports_eval_xy() -> bool:
+    """True if ``LGBMRegressor.fit`` of the installed LightGBM accepts ``eval_X`` and ``eval_y``; otherwise
+    validation rows are passed as ``eval_set``.
+    """
     try:
         import inspect
 
@@ -235,6 +268,7 @@ _LGBM_EVAL_XY = _lgbm_supports_eval_xy()
 
 
 class LGBMLearner(Learner):
+    """LightGBM with native categorical handling."""
     name, iterative, shares_encoding = "LGBM", True, True
 
     def _fit(self, X, y, X_val, y_val):
@@ -264,11 +298,13 @@ class LGBMLearner(Learner):
         self._threads = n if n and n > 0 else 0
 
     def contributions(self, X):
+        """TreeSHAP values of the features and the base value, computed by LightGBM."""
         c = self.model.predict(self.encoder.transform(X), pred_contrib=True, num_iteration=self.best_iteration)
         return c[:, :-1], c[:, -1]
 
 
 class XGBLearner(Learner):
+    """XGBoost (histogram method) with native categorical handling."""
     name, iterative, shares_encoding = "XGB", True, True
 
     def _fit(self, X, y, X_val, y_val):
@@ -289,6 +325,7 @@ class XGBLearner(Learner):
         self.model.set_params(n_jobs=n)
 
     def contributions(self, X):
+        """TreeSHAP values of the features and the base value, computed by XGBoost."""
         import xgboost as xgb
         d = xgb.DMatrix(self.encoder.transform(X), enable_categorical=True)
         c = self.model.get_booster().predict(d, pred_contribs=True, iteration_range=(0, self.best_iteration))
@@ -296,9 +333,11 @@ class XGBLearner(Learner):
 
 
 class CATLearner(Learner):
+    """CatBoost with native categorical handling; categorical values are passed as string labels."""
     name, iterative, shares_encoding = "CAT", True, True
 
     def _prep(self, X):
+        """Copy of ``X`` with categorical columns as string labels, using an explicit token for missing levels."""
         X = X.copy()
         for c in self.encoder.categorical:
             X[c] = as_labels(X[c])
@@ -325,6 +364,7 @@ class CATLearner(Learner):
         self._threads = n
 
     def contributions(self, X):
+        """SHAP values of the features and the base value, computed by CatBoost."""
         from catboost import Pool
         pool = Pool(self._prep(self.encoder.transform(X)), cat_features=self.encoder.categorical)
         c = self.model.get_feature_importance(pool, type="ShapValues")
@@ -332,7 +372,11 @@ class CATLearner(Learner):
 
 
 class _SklearnTree(Learner):
+    """Common code of the scikit-learn trees, which receive categorical features as integer codes (NaN for missing
+    or unseen levels).
+    """
     def _array(self, X):
+        """Feature matrix with categorical codes."""
         return self.encoder.to_numeric(X)
 
     def fit(self, X, y, X_val=None, y_val=None):
@@ -350,6 +394,7 @@ class _SklearnTree(Learner):
 
 
 class RFLearner(_SklearnTree):
+    """Random forest (scikit-learn); 300 trees, each grown on a 50% subsample, unless the parameters set otherwise."""
     name = "RF"
 
     def _build(self):
@@ -359,6 +404,7 @@ class RFLearner(_SklearnTree):
 
 
 class DTLearner(_SklearnTree):
+    """Decision tree (scikit-learn)."""
     name = "DT"
 
     def _build(self):
@@ -367,7 +413,12 @@ class DTLearner(_SklearnTree):
 
 
 class _Linear(Learner):
+    """Linear models on standardised numeric features with missing-value indicators and one-hot encoded categorical
+    features. A categorical feature with more than 50 levels keeps 50 columns, the rarest levels sharing one column
+    to which unseen levels are also mapped; otherwise unseen levels are encoded as all zeros.
+    """
     def _pipeline(self, estimator):
+        """Preprocessing pipeline followed by ``estimator``."""
         from sklearn.compose import ColumnTransformer
         from sklearn.impute import SimpleImputer
         from sklearn.pipeline import make_pipeline
@@ -378,6 +429,7 @@ class _Linear(Learner):
         return make_pipeline(ct, estimator)
 
     def _frame(self, X):
+        """Encoded features with categorical values as string labels."""
         X = self.encoder.transform(X)
         for c in self.encoder.categorical:
             X[c] = as_labels(X[c])
@@ -394,6 +446,7 @@ class _Linear(Learner):
 
 
 class OLSLearner(_Linear):
+    """Ordinary least squares."""
     name = "OLS"
 
     def _estimator(self):
@@ -402,6 +455,7 @@ class OLSLearner(_Linear):
 
 
 class RidgeLearner(_Linear):
+    """Ridge regression; the penalty ``alpha`` is tuned."""
     name = "RIDGE"
 
     def _estimator(self):
@@ -428,9 +482,11 @@ class EBMLearner(Learner):
         return self.model.predict(self.encoder.transform(X))
 
 
+# imported here because the deep learners subclass Learner, defined above
 from .deep import (CNNLearner, FTTransformerLearner, LSTMLearner, MLPLearner,  # noqa: E402
                    ResNetLearner, TabNetLearner)
 
+# Base learners by configuration name, and the subset trained in epochs (not rescaled for a refit).
 LEARNERS: dict[str, type[Learner]] = {cls.name: cls for cls in
                                       (LGBMLearner, XGBLearner, CATLearner, RFLearner, DTLearner, OLSLearner,
                                        RidgeLearner, EBMLearner, MLPLearner, ResNetLearner, CNNLearner,
@@ -439,6 +495,7 @@ DEEP_LEARNERS = {"MLP", "RESNET", "CNN", "LSTM", "FTT", "TABNET"}
 
 
 def make_learner(name: str, features, categorical, params=None, seed=0, n_jobs=-1, cfg=None) -> Learner:
+    """Instantiate the base learner registered as ``name``."""
     if name not in LEARNERS:
         raise KeyError(f"Unknown learner '{name}'. Available: {sorted(LEARNERS)}")
     return LEARNERS[name](features, categorical, params, seed, n_jobs, cfg)
@@ -475,4 +532,5 @@ def refit_params(name: str, params: dict, best_iteration: int | None, n_inner: i
     return out
 
 
+# scikit-learn warns when a model fitted on a DataFrame predicts from an array; here this is intended
 warnings.filterwarnings("ignore", message=".*X does not have valid feature names.*")

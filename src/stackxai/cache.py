@@ -14,6 +14,9 @@ log = logging.getLogger(__name__)
 
 
 def fingerprint(*parts) -> str:
+    """Short SHA-256 digest of ``parts``. The parts are serialised as JSON with sorted keys; NumPy arrays and
+    scalars are converted to plain Python values and any other object to its string form.
+    """
     def default(o):
         if isinstance(o, np.ndarray):
             return o.tolist()
@@ -36,6 +39,11 @@ class Cache:
         self.hits = self.misses = 0
 
     def get(self, key: str, fn, fp: str = ""):
+        """Return the checkpoint stored for ``key`` and ``fp``, or compute it with ``fn()`` and store it.
+
+        Without a root directory nothing is stored. With ``enabled=False`` existing checkpoints are ignored and
+        overwritten. An unreadable checkpoint is recomputed, and a failed write only logs a warning.
+        """
         if self.root is None:
             return fn()
         path = self.root / f"{key}-{fp}.joblib"
@@ -59,8 +67,8 @@ class Cache:
         return obj
 
 
-# Settings introduced after checkpoints were first written. At their neutral value they do not change
-# any result, so they are left out of fingerprints and existing checkpoints stay valid.
+# Settings that enter a fingerprint only when they differ from the value listed here. The listed value gives the
+# same computation as omitting the setting, so configurations that omit it or state this value share checkpoints.
 NEUTRAL_SETTINGS = {"tuning": {"max_val_rows": None, "val_position": "after_cut", "sampler_seed": "shared",
                                "space_overrides": {}},
                     "dataset": {"drop_features": [], "target_transform": "none"}}

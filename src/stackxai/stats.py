@@ -7,6 +7,7 @@ from scipy.stats import wilcoxon
 
 
 def holm(pvalues: np.ndarray) -> np.ndarray:
+    """Holm-adjusted p-values (step-down control of the family-wise error rate), in the order of the input."""
     p = np.asarray(pvalues, float)
     order = np.argsort(p)
     adj = np.empty_like(p)

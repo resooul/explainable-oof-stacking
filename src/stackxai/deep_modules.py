@@ -20,6 +20,9 @@ class EmbeddingNet(nn.Module):
 
 
 class CNNBackbone(nn.Module):
+    """Two one-dimensional convolutions (32 and 64 filters of width three), max pooling and a dense head; the input
+    vector is read as a one-channel sequence.
+    """
     def __init__(self, d_in: int, dropout: float):
         super().__init__()
         self.net = nn.Sequential(nn.Unflatten(1, (1, d_in)), nn.Conv1d(1, 32, 3, padding=1), nn.ReLU(),
@@ -31,6 +34,9 @@ class CNNBackbone(nn.Module):
 
 
 class LSTMBackbone(nn.Module):
+    """LSTM with 64 hidden units that reads the input vector one element per step; its last hidden state feeds a
+    dense head.
+    """
     def __init__(self, dropout: float):
         super().__init__()
         self.lstm = nn.LSTM(1, 64, batch_first=True)
@@ -42,6 +48,7 @@ class LSTMBackbone(nn.Module):
 
 
 class FTTNet(nn.Module):
+    """FT-Transformer of ``rtdl_revisiting_models`` with the numeric and categorical inputs of the other networks."""
     def __init__(self, n_num: int, cardinalities: list[int], **kwargs):
         super().__init__()
         self.ftt = rtdl.FTTransformer(n_cont_features=n_num, cat_cardinalities=cardinalities, d_out=1, **kwargs)
@@ -50,4 +57,5 @@ class FTTNet(nn.Module):
         return self.ftt(x_num if x_num.shape[1] else None, x_cat if x_cat.shape[1] else None)
 
     def make_parameter_groups(self):
+        """Optimiser parameter groups as defined by the FT-Transformer implementation."""
         return self.ftt.make_parameter_groups()

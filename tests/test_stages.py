@@ -1,3 +1,4 @@
+"""Staged runs that share checkpoints, and configuration inheritance through ``extends``."""
 import importlib.util
 
 import pytest

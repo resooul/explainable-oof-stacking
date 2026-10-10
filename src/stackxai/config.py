@@ -10,6 +10,8 @@ import yaml
 
 from .target import SMEARING, TRANSFORMS
 
+# Default value of every configuration key. A configuration file overrides any subset of these keys; keys that
+# do not appear here are rejected by load_config.
 DEFAULTS: dict = {
     "run": {"name": "experiment", "output_dir": "results", "seed": 0, "n_jobs": -1, "continue_on_error": False,
             "stop_after": None},
@@ -126,6 +128,9 @@ DEFAULTS: dict = {
 
 
 def deep_merge(base: dict, override: dict) -> dict:
+    """Copy of ``base`` with ``override`` merged into it: nested dictionaries are merged key by key, any other value
+    is replaced.
+    """
     out = copy.deepcopy(base)
     for key, value in (override or {}).items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
@@ -136,6 +141,10 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 
 def _unknown_keys(cfg: dict, ref: dict, prefix: str = "") -> list[str]:
+    """Dotted names of the keys of ``cfg`` that do not exist in ``ref``. The contents of sections whose keys are
+    chosen by the user (trial budgets per model, cleaning rules, calendar and geo settings, search-space overrides,
+    display labels) are not checked.
+    """
     bad = []
     for key, value in cfg.items():
         if key not in ref:
@@ -191,6 +200,11 @@ def _read_user(path: Path, chain: tuple = ()) -> dict:
 
 
 def load_config(path: str | Path, overrides: dict | None = None) -> dict:
+    """Read a configuration file, merge it into ``DEFAULTS``, apply ``overrides`` and validate the result.
+
+    Unknown keys, invalid option values and unknown model names raise an error before any computation starts.
+    ``stacking.combiner_selection: auto`` is resolved here to a concrete out-of-fold scheme.
+    """
     user = _read_user(Path(path))
     unknown = _unknown_keys(user, DEFAULTS)
     if unknown:
@@ -247,4 +261,5 @@ def load_config(path: str | Path, overrides: dict | None = None) -> dict:
 
 
 def config_hash(cfg: dict) -> str:
+    """Short SHA-256 digest of a resolved configuration, recorded with every run."""
     return hashlib.sha256(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]

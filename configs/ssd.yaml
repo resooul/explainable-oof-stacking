@@ -1,10 +1,14 @@
-# SSD experiment of the article. The data are proprietary and are not part of this repository;
-# the configuration is published so that the protocol of the delivery experiment can be inspected.
-# Input: the modelling table, one row per order and phase (not public).
-# Every setting is stated explicitly. Apart from the dataset section, the protocol is that of configs/nyc.yaml with
-# the three changes of version 1.4: the inner validation rows are the most recent rows of each training segment,
-# every hyperparameter search has its own sampler seed, and the combiner is chosen on the forward-chaining
-# out-of-fold predictions.
+# Same-day delivery (SSD) experiment of the article.
+#
+# The data are proprietary and are not part of this repository. The configuration is published so that the protocol
+# of the delivery experiment can be inspected. Input: the modelling table, one row per order and shipment phase.
+#
+# Every setting is stated explicitly. Apart from the dataset section, the protocol differs from configs/nyc.yaml in
+# three settings, which are the package defaults: the inner validation rows are the most recent 90,000 rows of each
+# training segment, every hyperparameter search draws its own sampler seed, and the combiner is chosen on the
+# forward-chaining out-of-fold predictions. Smaller differences: the ridge penalty range is extended, CAT and FTT
+# are added to the selected families at every rolling origin, results by period are monthly, and FTT is the only
+# extra comparator.
 run:
   name: ssd
   output_dir: results
@@ -15,92 +19,92 @@ run:
 dataset:
   adapter: generic
   path: data/processed/ssd_model_table.parquet
-  time_col: shipmentCreatedDate  # prediction time; rows are ordered and split by it
-  target_col: timeDifference     # minutes from shipment creation to the phase event
+  time_col: shipmentCreatedDate   # prediction time; rows are ordered and split by it
+  target_col: timeDifference      # minutes from shipment creation to the phase event
   target_scale: 0.016666666666666666   # minutes -> hours
   target_unit: hours
-  target_transform: log          # models are trained, tuned and selected on log(minutes); metrics are reported in hours
-  target_smearing: stratum       # retransformation bias corrected per phase (Duan's smearing, training rows only)
-  group_col: orderKey            # the pickup and delivery rows of an order stay on the same side of every split
-  strata_col: shipmentStatus     # metrics and tests are also reported per phase
-  cluster: day                   # bootstrap resamples whole creation days (both rows of an order share one day)
-  features: null                 # every column except time, target, group and 'exclude'
+  target_transform: log           # trained, tuned and selected on log(minutes); metrics are reported in hours
+  target_smearing: stratum        # retransformation bias corrected per phase (Duan's smearing, training rows only)
+  group_col: orderKey             # the pickup and delivery rows of an order stay on the same side of every split
+  strata_col: shipmentStatus      # metrics and tests are also reported per phase
+  cluster: day                    # the bootstrap resamples whole creation days (both rows of an order share one day)
+  features: null                  # every column except time, target, group and 'exclude'
   exclude: [index]
   categorical: [deliveryCompanyId, senderCity, senderCountry, paymentType, boxSize, partOfDay, shipmentStatus]
   calendar:
-    enabled: false               # calendar features are already in the table (derived from shipmentCreatedDate)
-  geo: null                      # distance_km is already in the table
+    enabled: false                # calendar features are already in the table (derived from shipmentCreatedDate)
+  geo: null                       # distance_km is already in the table
 
 split:
-  test_fraction: 0.3             # chronological, by order
+  test_fraction: 0.3              # chronological, by order
   n_folds: 5
   gap: null
 
 tuning:
-  mode: nested
+  mode: nested                    # a separate search for every out-of-fold model and for the final refit
   metric: rmse
   val_fraction: 0.2
-  max_rows: 150000
-  max_val_rows: 90000            # about 2.5 months at roughly 36,000 rows per month
-  inner_split: contiguous
-  val_position: latest           # validation rows are the most recent rows of the segment
-  sampler_seed: per_split        # every search draws its own start-up configurations
+  max_rows: 150000                # inner fitting rows: 80% of max_rows (120,000)
+  max_val_rows: 90000             # about one month at the order volumes of 2022
+  inner_split: contiguous         # inner split drawn from the most recent contiguous run of the training rows
+  val_position: latest            # validation rows are the most recent rows of the segment
+  sampler_seed: per_split         # every search draws its own start-up configurations
   space_overrides:
-    RIDGE: {alpha: [float_log, 0.001, 1.0e+7]}   # with ~870,000 training rows a penalty below ~1e3 has no effect
+    RIDGE: {alpha: [float_log, 0.001, 1.0e+7]}   # with about 870,000 training rows a penalty below ~1e3 has no effect
   early_stopping_rounds: 100
   max_estimators: 10000
-  refit_scaling: sqrt
+  refit_scaling: sqrt             # refit boosting rounds grow with sqrt(sample-size ratio), capped by max_estimators
   warm_start: true
   n_trials: {LGBM: 20, XGB: 20, CAT: 20, RF: 20, DT: 20, RIDGE: 20, EBM: 20,
-             MLP: 20, RESNET: 20, CNN: 20, LSTM: 20, FTT: 20, TABNET: 20}
+             MLP: 20, RESNET: 20, CNN: 20, LSTM: 20, FTT: 20, TABNET: 20}   # equal budget for every family
   deep: {device: auto, batch_size: 1024, eval_batch_size: 8192, max_epochs: 100, patience: 8}
 
 base_learners: [LGBM, XGB, CAT, RF, DT, OLS, RIDGE, EBM, MLP, RESNET, CNN, LSTM, FTT, TABNET]
 
 stacking:
-  top_k: 3
+  top_k: 3                        # number of base learners passed to the combiners
   selection_metric: rmse
   oof_schemes: [blocked, forward]
-  primary_scheme: blocked
+  primary_scheme: blocked         # the deployed combiners are fitted on the blocked out-of-fold predictions
   secondary_learners: selected
   meta_learners: [EN_AVG, EN_WAVG, EN_LIN, EN_LGBM, EN_XGB, EN_CAT]
   wavg_objective: mse
   meta_trials: 15
-  meta_val_fraction: 0.2
-  meta_selection: rolling
-  meta_selection_windows: 4
-  combiner_selection: forward
+  meta_val_fraction: 0.2          # hold-out size; used only with meta_selection: holdout
+  meta_selection: rolling         # combiner chosen by its mean score over consecutive windows
+  meta_selection_windows: 4       # the most recent 4/5 of the meta-rows, cut into four windows of equal size
+  combiner_selection: forward     # each block predicted only by models fitted on earlier blocks
 
 evaluation:
   primary_metric: rmse
   clip_min: 0.0
-  band_quantiles: [0.25, 0.75]
+  band_quantiles: [0.25, 0.75]    # duration bands at the lower and upper quartiles of the training targets
   band_labels: [short, medium, long]
-  period: M
-  rare_threshold: 10
+  period: M                       # results by calendar month
+  rare_threshold: 10              # levels seen fewer than ten times in training are reported as rare
 
 statistics:
   alpha: 0.05
   bootstrap_resamples: 2000
-  extra_references: [FTT]
+  extra_references: [FTT]         # additional comparator, reported alongside the out-of-fold reference
 
 robustness:
-  seeds: [0, 1, 2, 3, 4]
+  seeds: [0, 1, 2, 3, 4]          # refits with fixed hyperparameters
 
 rolling:
   enabled: true
   n_origins: 4
-  test_fraction: 0.1
+  test_fraction: 0.1              # each origin is followed by a test window of 10% of the data
   window: expanding
-  tuning_mode: single
+  tuning_mode: single             # one search per model family at each origin
   base_learners: [LGBM, XGB, CAT, FTT]   # added to the selected families; top-k selection is repeated at each origin
-  trial_scale: 0.5
-  reference: main
+  trial_scale: 0.5                # half of the trial budget at each origin
+  reference: main                 # fixed comparator at every origin: the reference learner of the main experiment
 
 sensitivity:
   enabled: true
   learners: selected
-  params: null
+  params: null                    # null: every parameter of each learner's search space
   log_factors: [0.5, 2.0]
   linear_step: 0.25
 
@@ -114,8 +118,9 @@ explain:
   top_k_overlap: 10
   dependence_top: 3
   waterfall_quantile: 0.95
-  feature_labels:                # display names in figures (tables keep the column names); redraw with
-    deliveryCompanyId: Delivery Company     #   python -m stackxai plots --run-dir results/ssd --config <file>
+  feature_labels:                 # display names in figures (tables keep the column names); figures can be redrawn
+                                  # with: python -m stackxai plots --run-dir results/ssd --config configs/ssd.yaml
+    deliveryCompanyId: Delivery Company
     senderCity: Sender City
     senderCountry: Sender Country
     shipmentStatus: Target Status
@@ -139,17 +144,16 @@ explain:
     isWeekend: Is Weekend
     isHoliday: Is Holiday
     isRamadan: Is Ramadan
-  value_labels:                  # displayed values of categorical features (waterfall and dependence plots)
+  value_labels:                   # displayed values of categorical features (waterfall and dependence plots)
     shipmentStatus: {pickedUp: Pickup, delivered: Delivery}
     paymentType: {paid: Paid, cod: COD}
     boxSize: {small: Small, medium: Medium, big: Big, extra: Extra Large}
     partOfDay: {morning: Morning, afternoon: Afternoon, evening: Evening, night: Night}
-    # productType holds the former isGift flag (0/1); add e.g. {0: Parcel, 1: Document} once the coding is confirmed
 
 profiling:
   enabled: true
   latency_rows: 1000
   warmup: 50
-  workers: [1, 2, 4, 8]
-  process_workers: [1, 2, 4, 8]
+  workers: [1, 2, 4, 8]           # threads sharing one loaded pipeline
+  process_workers: [1, 2, 4, 8]   # processes, each loading its own copy
   batch_rows: 100000

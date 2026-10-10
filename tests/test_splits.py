@@ -1,3 +1,4 @@
+"""Chronological hold-out, out-of-fold blocks, purge gap, inner tuning splits and rolling origins."""
 import numpy as np
 import pandas as pd
 import pytest
@@ -70,8 +71,8 @@ def test_inner_split_never_spans_the_held_out_block():
         both = np.r_[fit, val]
         assert np.all(np.diff(both) == 1), "fit and validation rows must form one contiguous run"
         assert not np.intersect1d(both, f.valid).size
-    legacy_fit, _ = inner_split(folds[3].train, starts, 0.2, max_rows=600, segment="all")
-    assert not np.all(np.diff(legacy_fit) == 1)      # the legacy behaviour crosses the hole
+    all_rows_fit, _ = inner_split(folds[3].train, starts, 0.2, max_rows=600, segment="all")
+    assert not np.all(np.diff(all_rows_fit) == 1)    # segment="all" crosses the hole
 
 
 def test_inner_segment_extends_backwards_when_too_short():

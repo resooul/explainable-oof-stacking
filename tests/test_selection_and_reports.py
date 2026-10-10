@@ -1,4 +1,5 @@
-"""Tests for the combiner-selection split, rolling reference, sensitivity variants and new report tables."""
+"""Combiner selection, rolling-origin settings, sensitivity variants, checkpoint fingerprints and the report tables
+of a run with the generic adapter."""
 import numpy as np
 import pandas as pd
 import pytest
@@ -64,16 +65,17 @@ def test_max_val_rows_enlarges_only_the_validation_set():
     assert len(val0) == 200 and len(val1) == 1500 and val1[0] == fit1[-1] + 1
 
 
-def test_new_neutral_settings_leave_checkpoint_fingerprints_unchanged():
+def test_settings_at_neutral_values_are_left_out_of_fingerprints():
     from stackxai.cache import stable_section
     cfg = deep_merge(DEFAULTS, {})
-    # the 1.4 defaults (val_position: latest, sampler_seed: per_split) are new behaviour and enter fingerprints;
-    # at the legacy values they are left out (see test_v14.test_legacy_values_keep_checkpoint_fingerprints)
-    legacy_tuning = {k: v for k, v in cfg["tuning"].items() if k not in ("max_val_rows", "space_overrides")}
-    legacy_dataset = {k: v for k, v in cfg["dataset"].items()
+    # with the defaults, max_val_rows, space_overrides, drop_features and target_transform are at their neutral
+    # values and left out, whereas val_position and sampler_seed are not (see cache.NEUTRAL_SETTINGS and
+    # test_protocol.test_neutral_values_are_left_out_of_fingerprints); target_smearing only affects reporting
+    expected_tuning = {k: v for k, v in cfg["tuning"].items() if k not in ("max_val_rows", "space_overrides")}
+    expected_dataset = {k: v for k, v in cfg["dataset"].items()
                       if k not in ("drop_features", "target_transform", "target_smearing")}
-    assert stable_section(cfg, "tuning") == legacy_tuning
-    assert stable_section(cfg, "dataset") == legacy_dataset
+    assert stable_section(cfg, "tuning") == expected_tuning
+    assert stable_section(cfg, "dataset") == expected_dataset
     changed = deep_merge(cfg, {"tuning": {"max_val_rows": 5000}})
     assert stable_section(changed, "tuning")["max_val_rows"] == 5000
     logged = deep_merge(cfg, {"dataset": {"target_transform": "log", "target_smearing": "global"}})
@@ -117,7 +119,7 @@ def _long_table(n_orders=1500, seed=0):
     return df
 
 
-def test_generic_run_reports_new_tables(tmp_path):
+def test_generic_run_writes_the_analysis_tables(tmp_path):
     path = tmp_path / "table.parquet"
     _long_table().to_parquet(path)
     user = {

@@ -1,3 +1,4 @@
+"""Base learners, configuration checks, unconstrained linear stacking and refit scaling of boosting rounds."""
 import importlib.util
 
 import numpy as np

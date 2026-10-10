@@ -1,7 +1,10 @@
-# Full experiment on the Kaggle "New York City Taxi Trip Duration" training file.
-# It can be run directly, or in stages: nyc_ml.yaml and nyc_dl.yaml train the machine-learning and the
-# deep-learning base learners (in either order or in parallel); running this file afterwards restores every base
-# learner from its checkpoint and performs selection, stacking and all analyses on the complete candidate set.
+# Experiment on the Kaggle "New York City Taxi Trip Duration" training file (data/raw/nyc/train.csv).
+#
+# Three tuning and stacking settings differ from the package defaults, which are used for the delivery experiment
+# (configs/ssd.yaml); they are marked "NYC setting" below:
+#   - the inner validation rows directly follow a cut at 80% of each training segment (tuning.val_position),
+#   - all hyperparameter searches share one sampler seed (tuning.sampler_seed),
+#   - the combiner is chosen on the blocked out-of-fold predictions (stacking.combiner_selection).
 run:
   name: nyc
   output_dir: results
@@ -12,35 +15,32 @@ run:
 dataset:
   adapter: nyc_taxi
   path: data/raw/nyc/train.csv
-  cluster: day
+  cluster: day                    # the bootstrap resamples whole pickup days
   cleaning:
-    min_duration_s: 60
-    max_duration_s: 18000
-    lat_range: [40.49, 40.92]
+    min_duration_s: 60            # trips shorter than one minute are removed
+    max_duration_s: 18000         # trips longer than five hours are removed
+    lat_range: [40.49, 40.92]     # bounding box around New York City
     lon_range: [-74.27, -73.68]
     passenger_range: [1, 6]
-    min_distance_km: 0.05
+    min_distance_km: 0.05         # trips with a straight-line distance below 50 m are removed
 
 split:
-  test_fraction: 0.3
+  test_fraction: 0.3              # the most recent 30% of the trips form the test partition
   n_folds: 5
   gap: null
 
 tuning:
-  mode: nested
+  mode: nested                    # a separate search for every out-of-fold model and for the final refit
   metric: rmse
   val_fraction: 0.2
   max_rows: 150000
-  max_val_rows: null        # null: validation cap = 20% of max_rows (30,000 rows, about 4 days of NYC trips);
-                            # set e.g. 100000 for about two weeks (base learners are then retrained)
-  inner_split: contiguous   # inner tuning split drawn from the most recent contiguous run of the fold's training rows
-  # The reported NYC results were produced with version 1.3. The two settings below reproduce them exactly and keep
-  # every existing checkpoint valid; the defaults of version 1.4 are val_position: latest and sampler_seed: per_split.
-  val_position: after_cut
-  sampler_seed: shared
+  max_val_rows: null              # null: validation cap = 20% of max_rows (30,000 rows, about four days of trips)
+  inner_split: contiguous         # inner split drawn from the most recent contiguous run of the training rows
+  val_position: after_cut         # NYC setting; default: latest (the most recent rows of the segment)
+  sampler_seed: shared            # NYC setting; default: per_split (one sampler seed per search)
   early_stopping_rounds: 100
   max_estimators: 10000
-  refit_scaling: sqrt   # boosting rounds of a refit grow with sqrt(sample-size ratio), capped by max_estimators
+  refit_scaling: sqrt             # refit boosting rounds grow with sqrt(sample-size ratio), capped by max_estimators
   warm_start: true
   n_trials: {LGBM: 20, XGB: 20, CAT: 20, RF: 20, DT: 20, RIDGE: 20, EBM: 20,
              MLP: 20, RESNET: 20, CNN: 20, LSTM: 20, FTT: 20, TABNET: 20}   # equal budget for every family
@@ -49,51 +49,50 @@ tuning:
 base_learners: [LGBM, XGB, CAT, RF, DT, OLS, RIDGE, EBM, MLP, RESNET, CNN, LSTM, FTT, TABNET]
 
 stacking:
-  top_k: 3
+  top_k: 3                        # number of base learners passed to the combiners
   selection_metric: rmse
   oof_schemes: [blocked, forward]
-  primary_scheme: blocked
+  primary_scheme: blocked         # the deployed combiners are fitted on the blocked out-of-fold predictions
   secondary_learners: selected
   meta_learners: [EN_AVG, EN_WAVG, EN_LIN, EN_LGBM, EN_XGB, EN_CAT]
   wavg_objective: mse
   meta_trials: 15
-  meta_val_fraction: 0.2           # hold-out size under meta_selection: holdout (v1.1 behaviour)
-  meta_selection: rolling          # combiner chosen by its mean score over consecutive windows
-  meta_selection_windows: 4        # with 5 OOF blocks, each window is one block, scored by a combiner
-                                   # fitted (and tuned) on the preceding blocks only
-  combiner_selection: blocked      # as reported (version 1.3); the 1.4 default selects on the forward-chaining
-                                   # out-of-fold predictions
+  meta_val_fraction: 0.2          # hold-out size; used only with meta_selection: holdout
+  meta_selection: rolling         # combiner chosen by its mean score over consecutive windows
+  meta_selection_windows: 4       # with 5 blocked out-of-fold blocks, each window is one block, scored by a combiner
+                                  # fitted (and tuned) on the preceding blocks only
+  combiner_selection: blocked     # NYC setting; default: auto (forward-chaining predictions when they are computed)
 
 evaluation:
   primary_metric: rmse
   clip_min: 0.0
-  band_quantiles: [0.25, 0.75]
+  band_quantiles: [0.25, 0.75]    # duration bands at the lower and upper quartiles of the training targets
   band_labels: [short, medium, long]
-  period: W
-  rare_threshold: 10
+  period: W                       # results by calendar week
+  rare_threshold: 10              # levels seen fewer than ten times in training are reported as rare
 
 statistics:
   alpha: 0.05
   bootstrap_resamples: 2000
-  extra_references: [CAT, FTT]   # additional comparators; reported alongside the out-of-fold reference
+  extra_references: [CAT, FTT]    # additional comparators, reported alongside the out-of-fold reference
 
 robustness:
-  seeds: [0, 1, 2, 3, 4]
+  seeds: [0, 1, 2, 3, 4]          # refits with fixed hyperparameters
 
 rolling:
   enabled: true
   n_origins: 4
-  test_fraction: 0.1
+  test_fraction: 0.1              # each origin is followed by a test window of 10% of the data
   window: expanding
-  tuning_mode: single
-  base_learners: selected   # selected | all | explicit list, e.g. [LGBM, XGB, CAT]
-  trial_scale: 0.5
-  reference: main           # fixed comparator at every origin: the reference learner of the main experiment
+  tuning_mode: single             # one search per model family at each origin
+  base_learners: selected         # selected | all | explicit list, e.g. [LGBM, XGB, CAT]
+  trial_scale: 0.5                # half of the trial budget at each origin
+  reference: main                 # fixed comparator at every origin: the reference learner of the main experiment
 
 sensitivity:
   enabled: true
   learners: selected
-  params: null              # null: every parameter of each learner's search space
+  params: null                    # null: every parameter of each learner's search space
   log_factors: [0.5, 2.0]
   linear_step: 0.25
 
@@ -112,6 +111,6 @@ profiling:
   enabled: true
   latency_rows: 1000
   warmup: 50
-  workers: [1, 2, 4, 8]
-  process_workers: [1, 2, 4, 8]
+  workers: [1, 2, 4, 8]           # threads sharing one loaded pipeline
+  process_workers: [1, 2, 4, 8]   # processes, each loading its own copy
   batch_rows: 100000

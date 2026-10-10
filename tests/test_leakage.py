@@ -1,3 +1,4 @@
+"""Leakage safeguards: vocabularies fitted on training rows only and out-of-fold predictions never in-sample."""
 import numpy as np
 import pandas as pd
 

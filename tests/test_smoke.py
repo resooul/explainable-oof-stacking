@@ -1,3 +1,4 @@
+"""End-to-end run of the complete pipeline on synthetic data with the schema of the NYC file."""
 import importlib.util
 
 import yaml

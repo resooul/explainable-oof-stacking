@@ -1,3 +1,4 @@
+"""Makes the helpers in tests/ (e.g. synthetic.py) importable from every test module."""
 import sys
 from pathlib import Path
 
