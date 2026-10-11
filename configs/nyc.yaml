@@ -1,10 +1,11 @@
 # Experiment on the Kaggle "New York City Taxi Trip Duration" training file (data/raw/nyc/train.csv).
 #
-# Three tuning and stacking settings differ from the package defaults, which are used for the delivery experiment
-# (configs/ssd.yaml); they are marked "NYC setting" below:
-#   - the inner validation rows directly follow a cut at 80% of each training segment (tuning.val_position),
-#   - all hyperparameter searches share one sampler seed (tuning.sampler_seed),
-#   - the combiner is chosen on the blocked out-of-fold predictions (stacking.combiner_selection).
+# The tuning and stacking protocol is identical to that of the delivery experiment (configs/ssd.yaml): the inner
+# validation rows are the most recent 90,000 rows of each training segment, every hyperparameter search draws its own
+# sampler seed, and the combiner is chosen on the forward-chaining out-of-fold predictions. Only the dataset section,
+# the reporting period (weeks), the extra comparators and the absence of a target transformation differ.
+# Earlier NYC results (package version 1.3) used a 30,000-row validation set following a cut at 80% of each segment,
+# one shared sampler seed and combiner selection on the blocked out-of-fold predictions; they are no longer reported.
 run:
   name: nyc
   output_dir: results
@@ -34,10 +35,12 @@ tuning:
   metric: rmse
   val_fraction: 0.2
   max_rows: 150000
-  max_val_rows: null              # null: validation cap = 20% of max_rows (30,000 rows, about four days of trips)
+  max_val_rows: 90000             # as in configs/ssd.yaml (about eleven days of trips at the 2016 volumes)
   inner_split: contiguous         # inner split drawn from the most recent contiguous run of the training rows
-  val_position: after_cut         # NYC setting; default: latest (the most recent rows of the segment)
-  sampler_seed: shared            # NYC setting; default: per_split (one sampler seed per search)
+  val_position: latest            # validation rows are the most recent rows of the segment
+  sampler_seed: per_split         # every search draws its own start-up configurations
+  space_overrides:
+    RIDGE: {alpha: [float_log, 0.001, 1.0e+7]}   # as in configs/ssd.yaml
   early_stopping_rounds: 100
   max_estimators: 10000
   refit_scaling: sqrt             # refit boosting rounds grow with sqrt(sample-size ratio), capped by max_estimators
@@ -59,9 +62,8 @@ stacking:
   meta_trials: 15
   meta_val_fraction: 0.2          # hold-out size; used only with meta_selection: holdout
   meta_selection: rolling         # combiner chosen by its mean score over consecutive windows
-  meta_selection_windows: 4       # with 5 blocked out-of-fold blocks, each window is one block, scored by a combiner
-                                  # fitted (and tuned) on the preceding blocks only
-  combiner_selection: blocked     # NYC setting; default: auto (forward-chaining predictions when they are computed)
+  meta_selection_windows: 4       # the most recent 4/5 of the meta-rows, cut into four windows of equal size
+  combiner_selection: forward     # each block predicted only by models fitted on earlier blocks
 
 evaluation:
   primary_metric: rmse
@@ -85,7 +87,8 @@ rolling:
   test_fraction: 0.1              # each origin is followed by a test window of 10% of the data
   window: expanding
   tuning_mode: single             # one search per model family at each origin
-  base_learners: selected         # selected | all | explicit list, e.g. [LGBM, XGB, CAT]
+  base_learners: [LGBM, XGB, CAT, FTT]   # as in configs/ssd.yaml: added to the selected families; top-k selection is
+                                         # repeated at each origin
   trial_scale: 0.5                # half of the trial budget at each origin
   reference: main                 # fixed comparator at every origin: the reference learner of the main experiment
 
