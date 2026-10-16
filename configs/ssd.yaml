@@ -3,12 +3,11 @@
 # The data are proprietary and are not part of this repository. The configuration is published so that the protocol
 # of the delivery experiment can be inspected. Input: the modelling table, one row per order and shipment phase.
 #
-# Every setting is stated explicitly. Apart from the dataset section, the protocol differs from configs/nyc.yaml in
-# three settings, which are the package defaults: the inner validation rows are the most recent 90,000 rows of each
-# training segment, every hyperparameter search draws its own sampler seed, and the combiner is chosen on the
-# forward-chaining out-of-fold predictions. Smaller differences: the ridge penalty range is extended, CAT and FTT
-# are added to the selected families at every rolling origin, results by period are monthly, and FTT is the only
-# extra comparator.
+# Every setting is stated explicitly. The tuning and stacking protocol is identical to that of configs/nyc.yaml: the
+# inner validation rows are the most recent 90,000 rows of each training segment, every hyperparameter search draws
+# its own sampler seed, and the combiner is chosen on the forward-chaining out-of-fold predictions. Apart from the
+# dataset section, the configurations differ only in the target transformation (log scale with smearing here),
+# the reporting period (monthly here), the extra comparators (FTT only here) and the feature labels of the figures.
 run:
   name: ssd
   output_dir: results

@@ -1,6 +1,6 @@
 # Quick end-to-end check of the pipeline on a 30,000-row subsample of the NYC data; runs in minutes.
-# Not intended for reporting. Settings not given here take the package defaults, so the inner validation split,
-# the sampler seeds and the combiner selection follow configs/ssd.yaml rather than configs/nyc.yaml.
+# Not intended for reporting. Settings not given here take the package defaults, which for the inner validation
+# split, the sampler seeds and the combiner selection are those of configs/nyc.yaml and configs/ssd.yaml.
 run:
   name: nyc_smoke
   n_jobs: 2

@@ -8,7 +8,8 @@ Reference implementation of the stacking methodology described in
 The repository reproduces every analysis of the article on the public
 [NYC Taxi Trip Duration](https://www.kaggle.com/competitions/nyc-taxi-trip-duration) dataset. The proprietary
 delivery dataset used in the article cannot be redistributed; the identical pipeline is applied to it through the
-generic dataset adapter; its configuration is published in `configs/ssd.yaml` (see also `configs/generic_example.yaml`).
+generic dataset adapter, and its configuration is published in `configs/ssd.yaml`. Both experiments of the article
+were run with version 1.4.2 under the same tuning and stacking protocol (see [Reproducing the article](#reproducing-the-article)).
 
 ## Methodology
 
@@ -50,7 +51,8 @@ raw data ─► cleaning & feature engineering ─► chronological holdout (tra
 4. **Base-learner selection** ranks all candidates by out-of-fold error on the training partition.
 5. **Level-1 combiners** are fitted on out-of-fold predictions: simple averaging (`EN_AVG`), convex weighted
    averaging (`EN_WAVG`), non-negative linear stacking (`EN_LIN`), unconstrained least-squares stacking (`EN_SLR`)
-   and three gradient-boosting meta-learners (`EN_LGBM`, `EN_XGB`, `EN_CAT`). The ensemble used for explanation
+   and three gradient-boosting meta-learners (`EN_LGBM`, `EN_XGB`, `EN_CAT`). The article compares six of them;
+   `EN_SLR` is available but is not listed in `stacking.meta_learners` of the published configurations. The ensemble used for explanation
    and profiling is chosen on the meta-dataset, never by test performance. When the forward-chaining scheme is
    computed, the choice is made on its out-of-fold predictions (`stacking.combiner_selection: auto`), whose
    meta-rows were produced by models that never saw a later row; the chosen combiner is deployed as fitted on the
@@ -73,8 +75,10 @@ raw data ─► cleaning & feature engineering ─► chronological holdout (tra
    `rolling.n_origins × rolling.test_fraction` of the data is divided into consecutive test windows; at every origin
    the complete pipeline (tuning, out-of-fold generation, combiners) is rebuilt from the preceding data only. By
    default (`rolling.base_learners: selected`) the model families selected in the main experiment are re-tuned and
-   refitted at every origin; `all` repeats the selection among every candidate at every origin, and
-   `tables/rolling_selection.csv` reports which learners were chosen. The comparator is fixed across origins
+   refitted at every origin; `all` repeats the selection among every candidate at every origin; an explicit list
+   adds the named families to the selected ones and repeats top-k selection over the enlarged set (the article uses
+   `[LGBM, XGB, CAT, FTT]`, so that CAT and FTT are rebuilt at every origin). `tables/rolling_selection.csv` reports
+   which learners were chosen. The comparator is fixed across origins
    (`rolling.reference: main`, the reference learner of the main experiment), and `tables/rolling_comparison.csv`
    additionally compares the protocol-selected ensemble with the best single base learner in hindsight at every
    origin. A one-at-a-time hyperparameter sensitivity analysis (`sensitivity`) moves each hyperparameter of the
@@ -156,29 +160,56 @@ merged through `dataset.external_features` (`path`, `key`, `columns`).
 ```bash
 python -m stackxai run --config configs/nyc_smoke.yaml     # subsample, pipeline check in minutes
 python -m stackxai run --config configs/nyc.yaml           # full NYC experiment -> results/nyc/
-python -m stackxai run --config configs/nyc.yaml configs/other.yaml    # several datasets, in order
+python -m stackxai run --config configs/nyc.yaml configs/<other>.yaml # several datasets, in order
 python -m stackxai run --config configs/nyc.yaml --set run.n_jobs=16 tuning.mode=single
 python -m stackxai profile --run-dir results/nyc           # re-run inference profiling only
 python -m stackxai plots --run-dir results/nyc             # redraw figures from stored results (no recomputation)
 ```
 
-The NYC results of the article were produced with version 1.3. `configs/nyc.yaml` therefore sets
-`tuning.val_position: after_cut`, `tuning.sampler_seed: shared` and `stacking.combiner_selection: blocked`, which
-reproduce them exactly; removing these three lines runs the NYC experiment under the 1.4 protocol. The SSD results were produced with version 1.4.2 and `configs/ssd.yaml`.
+### Reproducing the article
+
+The results of both experiments in the article were produced with version 1.4.2, `configs/nyc.yaml` for the NYC
+data and `configs/ssd.yaml` for the delivery data. The two configurations follow the same tuning and stacking
+protocol: the inner validation rows are the most recent 90,000 rows of each training segment
+(`tuning.val_position: latest`, `tuning.max_val_rows: 90000`), every hyperparameter search draws its own sampler seed
+(`tuning.sampler_seed: per_split`), and the combiner is chosen on the forward-chaining out-of-fold predictions
+(`stacking.combiner_selection: forward`) and deployed as fitted on the blocked ones. Apart from the dataset section,
+they differ only in the target transformation (log scale with smearing for the delivery data, none for NYC), the
+reporting period (months or weeks), the extra comparators and the feature labels used in the figures. The package versions of every run are recorded in
+`environment.json`.
+
+Earlier NYC results obtained with version 1.3, which used a 30,000-row inner validation set after a cut at 80% of
+each segment, one shared sampler seed and combiner selection on the blocked out-of-fold predictions, are not
+reported in the article. These settings remain available (`tuning.val_position: after_cut`,
+`tuning.sampler_seed: shared`, `stacking.combiner_selection: blocked`) but are not used by any published
+configuration.
 
 ### Running in stages
 
 The deep-learning base learners dominate the cost and use the GPU, whereas the other learners use the CPU. The
 experiment can therefore be split without changing its design:
 
+```yaml
+# configs/nyc_ml.yaml (stage 1a: tree-based, linear and GAM learners)
+extends: nyc.yaml
+run: {stop_after: base_learners}
+base_learners: [LGBM, XGB, CAT, RF, DT, OLS, RIDGE, EBM]
+
+# configs/nyc_dl.yaml (stage 1b: deep learners; may run in parallel with stage 1a)
+extends: nyc.yaml
+run: {stop_after: base_learners}
+base_learners: [MLP, RESNET, CNN, LSTM, FTT, TABNET]
+```
+
 ```bash
-python -m stackxai run --config configs/nyc_ml.yaml    # stage 1a: tree-based, linear and GAM learners
-python -m stackxai run --config configs/nyc_dl.yaml    # stage 1b: deep learners (may run in parallel with 1a)
+python -m stackxai run --config configs/nyc_ml.yaml    # stage 1a
+python -m stackxai run --config configs/nyc_dl.yaml    # stage 1b
 python -m stackxai run --config configs/nyc.yaml       # stage 2: all learners restored, then the full analysis
 ```
 
-`nyc_ml.yaml` and `nyc_dl.yaml` inherit every setting from `nyc.yaml` (`extends: nyc.yaml`) and differ only in the
-list of base learners and in `run.stop_after: base_learners`. Because checkpoints do not depend on which other
+The two stage files are not part of the repository and can be created as shown. They inherit every setting from
+`nyc.yaml` (`extends: nyc.yaml`) and differ only in the list of base learners and in
+`run.stop_after: base_learners`. Because checkpoints do not depend on which other
 learners are listed, the final run restores all fourteen base learners and performs top-k selection over the
 complete candidate set, exactly as a single run would; its summary reports the number of restored units. Settings
 that affect training must not be changed between the stages, otherwise the affected learners are retrained. When
@@ -279,9 +310,9 @@ selection-window predictions for combiners) and, by default, separately per stra
 The deployable `models/pipeline.joblib` returns report-scale predictions (`predict`) and model-scale ones
 (`predict_model`); SHAP explanations are on the model scale, where exp(SHAP value) is a multiplicative effect.
 
-Features can be removed from any adapter's feature set with `dataset.drop_features` (used by the ablation
-configurations `configs/nyc_no_trend.yaml`, which drops the calendar features whose test values lie outside the
-training range). A pre-engineered table requires only a configuration (see `configs/generic_example.yaml`). Configurations of
+Features can be removed from any adapter's feature set with `dataset.drop_features`, for example the calendar
+features whose test values lie outside the training range. A pre-engineered table requires only a configuration;
+`configs/ssd.yaml` is a complete example for the generic adapter. Configurations of
 non-public datasets can be kept next to the public ones as `configs/<name>.local.yaml`; such files are excluded from
 version control by `.gitignore`.
 
